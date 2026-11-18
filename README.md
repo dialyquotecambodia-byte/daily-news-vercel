@@ -405,6 +405,16 @@ New settings defaults and backup/restore keys: `antiraid`, `cleanservice`, `anti
 
 Dry-run suite: 54 + 35 + 20 + 15 + 6 + 17 + 12 + 18 + 26 + 10 Phase 8 checks, all passing; webhook/cron harnesses still 25/25 + 20/20.
 
+## Phase 7 — Khmer everywhere (2026-11-19)
+
+- **Khmer quotes doubled**: `KHMER_QUOTES` grew from 8 to **16**.
+- **/khmerquiz**: a quiz in Khmer — 10 new `KHMER_QUIZ_QUESTIONS` (capital, language, Angkor Wat, Mekong, maths, animals, leap year, Red Planet, AI). It reuses the normal quiz poll + scoring + XP, but the poll is flagged `khmer` and the correct/wrong replies are in Khmer ("ត្រឹមត្រូវ …", "មិនទាន់ត្រឹមត្រូវទេ …", level-up "ឡើងកម្រិត!"). `/khmerquiz` counts toward quiz stats like `/quiz`.
+- **Mini App language toggle**: an EN / ខ្មែរ switch in the header translates the main UI labels (tabs, search, hero, TL;DR button, card and reader buttons, AI Brief, Saved, Profile) into Khmer; article content stays English. Choice persists in localStorage and defaults to Khmer when the Telegram user's language is Khmer.
+- **Khmer morning briefing**: VM cron `telegram-superbot-khmer-briefing` runs daily ~10:42 Asia/Phnom_Penh, researches the top 3 AI/tech stories and posts one Khmer briefing to @dailynewsreporter via `/api/post-news` (title "🇰🇭 ព័ត៌មានពេលព្រឹក — <date>").
+- Command menu is now exactly **100** (the Telegram cap — verified live); **108 commands work in total**.
+
+Dry-run suite: 54 + 35 + 20 + 15 + 6 + 17 + 12 + 18 + 26 + 10 + 6 Phase 9 checks, all passing; webhook/cron harnesses still 25/25 + 20/20.
+
 ## Free-tier limits that matter
 
 - **Vercel Hobby functions:** default max 10s per invocation; `vercel.json`
