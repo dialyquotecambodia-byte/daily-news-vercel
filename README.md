@@ -355,6 +355,38 @@ vendored fonts. To try the KV backend locally, set `STATE_BACKEND=kv` plus
 - Command menu is now 91 commands. Dry-run suite: 54 + 35 + 20 + 15 + 6
   Khmer + 17 Phase 4 + 12 Phase 5 + 18 Phase 6 checks, all passing.
 
+## Rose Power Pack 2 (2026-11-19)
+
+- **Granular locks:** `/lock <type>` / `/unlock <type>` for sticker, photo,
+  video, audio, voice, document, gif, url, forward, bots, poll, location,
+  contact, game, invite, pin, or all — `/locks` lists what's locked,
+  `/locktypes` lists the types. Locked content is deleted (bots are
+  banned on join). `/lock` / `/unlock` with no type still lock/unlock
+  the whole group as before.
+- **/tban 1d** (reply or id): temporary ban with `until_date`; expired
+  temp bans are lifted automatically on the next update in the group.
+- **/id**: your ID, the group's ID, or a replied user's ID.
+- **/disable /quote** / **/enable** / **/disabled**: turn commands off in a
+  group (deleted on sight, admins bypass; /disable, /enable, /connect
+  can never be disabled).
+- **/approve** / **/unapprove** / **/approved**: approved members bypass
+  locks, links, flood, blacklist and force-subscribe checks.
+- **/setflood 8**: how many messages in 10 seconds counts as flooding
+  (default 5, range 1-20).
+- **/setgoodbye Bye {name}**: message sent when a member leaves.
+- **/fsub @Channel**: members must have joined the channel to chat;
+  non-members' messages are removed with a join prompt (checked via
+  getChatMember, fail-open).
+- New group settings (`locks`, `approved`, `disabled`, `flood_limit`,
+  `goodbye`, `fsub`) are covered by /backup and /restore.
+- **Menu limit found live:** Telegram caps the command menu at 100 —
+  the first setMyCommands with 104 commands failed 400. Five commands
+  (/locktypes, /disabled, /approved, /endgiveaway, /cancelschedule) stay
+  fully usable but are left out of the menu; the menu now shows 99.
+- Command menu is now 99 commands (104 commands work in total).
+  Dry-run suite: 54 + 35 + 20 + 15 + 6 Khmer + 17 Phase 4 + 12 Phase 5
+  + 18 Phase 6 + 22 Phase 7 checks, all passing.
+
 ## Free-tier limits that matter
 
 - **Vercel Hobby functions:** default max 10s per invocation; `vercel.json`
