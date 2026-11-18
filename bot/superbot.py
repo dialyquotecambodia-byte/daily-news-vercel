@@ -606,7 +606,7 @@ def track_user(state, message, command=""):
     if not uid:
         return None
     users = state.setdefault("users", {})
-    record = users.setdefault(uid, {"name": user.get("first_name", "friend"), "messages": 0, "quotes": 0, "quizzes": 0, "first_seen": int(time.time()), "last_seen": int(time.time()), "last_command": "", "favourite": ""})
+    record = users.setdefault(uid, {"name": user.get("first_name", "friend"), "messages": 0, "quotes": 0, "quizzes": 0, "first_seen": int(time.time()), "last_seen": int(time.time()), "last_command": "", "favourite": "", "lang": "en"})
     record["name"] = user.get("first_name", record["name"])
     record["messages"] += 1
     record["last_seen"] = int(time.time())
@@ -1589,7 +1589,7 @@ def ai_chat(prompt, dry_run=False):
     (OPENAI_BASE_URL, default https://api.openai.com/v1); otherwise use the
     free Pollinations text API (no key needed). Returns the answer text or None."""
     if dry_run:
-        return "[test AI reply]"
+        return "[test AI reply in Khmer]" if prompt.startswith("Reply in Khmer") else "[test AI reply]"
     if not prompt or not prompt.strip():
         return None
     key = os.environ.get("OPENAI_API_KEY", "").strip()
@@ -1618,6 +1618,14 @@ def ai_chat(prompt, dry_run=False):
     except Exception as e:
         print(f"pollinations chat failed: {e}", flush=True)
         return None
+
+
+def ai_reply(state, uid, prompt, dry_run=False):
+    """Ask the AI in the user's preferred language (Khmer if they asked for it)."""
+    lang = (state.get("users", {}).get(str(uid), {}) or {}).get("lang", "en")
+    if lang == "kh":
+        prompt = "Reply in Khmer language. " + prompt
+    return ai_chat(prompt, dry_run=dry_run)
 
 
 def ai_moderate(text, dry_run=False):
@@ -2665,7 +2673,7 @@ def handle_update(update, state, dry_run=False):
         else:
             answer = answer_question(args, state, user_record)
             if answer.startswith("Good question!"):
-                ai = ai_chat(args, dry_run=dry_run)
+                ai = ai_reply(state, sender_id, args, dry_run=dry_run)
                 reply(ai if ai else answer)
             else:
                 reply(answer)
@@ -2788,7 +2796,7 @@ def handle_update(update, state, dry_run=False):
     elif "what is" in lower or lower.endswith("?"):
         answer = answer_question(text, state, user_record)
         if answer.startswith("Good question!"):
-            ai = ai_chat(text, dry_run=dry_run)
+            ai = ai_reply(state, sender_id, text, dry_run=dry_run)
             reply(ai if ai else answer)
         else:
             reply(answer)
@@ -2797,9 +2805,21 @@ def handle_update(update, state, dry_run=False):
         reply(f"{text.strip()} = {result}" if result is not None else "I couldn't work that out. Try something like 12+8.")
     elif "remember" in lower and "my name is" in lower:
         reply(f"Got it, I'll remember you. Nice to meet you, {(message.get('from') or {}).get('first_name', 'friend')}!")
+    elif "khmer" in lower and any(w in lower for w in ("reply", "speak", "talk", "write", "language", "in khmer", "use khmer")):
+        if user_record is not None:
+            user_record["lang"] = "kh"
+        reply("បាទ! ខ្ញុំអាចសរសេរ និងឆ្លើយជាភាសាខ្មែរបាន។ ចាប់ពីពេលនេះតទៅ ខ្ញុំនឹងឆ្លើយជាភាសាខ្មែរ។ សាកសួរខ្ញុំអ្វីមួយមក! 🇰🇭")
+    elif "english" in lower and any(w in lower for w in ("reply", "speak", "talk", "write", "language", "in english", "use english")):
+        if user_record is not None:
+            user_record["lang"] = "en"
+        reply("Sure! I'll reply in English from now on. Ask me anything!")
     else:
-        # Use memory: greet returning users by name and favourite
-        if user_record and user_record.get("messages", 0) > 3:
+        # Private chat: talk with the AI instead of the canned thanks message.
+        # Groups keep the short thanks reply so the bot doesn't chatter there.
+        ai = ai_reply(state, sender_id, text, dry_run=dry_run) if chat_type == "private" else None
+        if ai:
+            reply(ai)
+        elif user_record and user_record.get("messages", 0) > 3:
             reply(f"Thanks, {user_record.get('name', 'friend')}! You have sent me {user_record.get('messages', 0)} messages now. Send /quote for a quote, /quiz for a game, /ask to ask me something, or /help to see everything.")
         else:
             reply("Thanks for your message! Send /quote for a quote, /quoteimg for a picture, /quiz for a game, /ask to ask me something, or /help to see everything I can do.")
@@ -3331,6 +3351,28 @@ def run_tests():
     a = handle_update({"update_id": 316, "message": {"chat": group, "from": admin, "text": "/restore not json at all"}}, state, dry_run=True)
     check3("restore rejects bad JSON", any("doesn't look like a backup" in t for t in texts(a)))
     print(f"phase 3 checks: {len(fails)} failures")
+    if fails:
+        print("FAILED: " + "; ".join(fails))
+        return 1
+
+    # Phase 3b (Khmer language switch + AI fallback for plain chat) tests.
+    fails = []
+    def check3b(label, cond):
+        print(("PASS " if cond else "FAIL ") + label)
+        if not cond:
+            fails.append(label)
+    a = handle_update({"update_id": 401, "message": {"chat": dm, "from": player, "text": "Reply me as Khmer language"}}, state, dry_run=True)
+    check3b("khmer request switches language", state.get("users", {}).get("777", {}).get("lang") == "kh")
+    check3b("khmer request answered in Khmer", any("ខ្មែរ" in t for t in texts(a)))
+    a = handle_update({"update_id": 402, "message": {"chat": dm, "from": player, "text": "tell me something nice"}}, state, dry_run=True)
+    check3b("plain chat answered by AI in Khmer", any(t == "[test AI reply in Khmer]" for t in texts(a)))
+    a = handle_update({"update_id": 403, "message": {"chat": dm, "from": player, "text": "Reply in English please"}}, state, dry_run=True)
+    check3b("english request switches back", state.get("users", {}).get("777", {}).get("lang") == "en")
+    a = handle_update({"update_id": 404, "message": {"chat": dm, "from": player, "text": "tell me something nice"}}, state, dry_run=True)
+    check3b("plain chat answered by AI in English", any(t == "[test AI reply]" for t in texts(a)))
+    a = handle_update({"update_id": 405, "message": {"chat": dm, "from": player, "text": "Can you write Khmer"}}, state, dry_run=True)
+    check3b("can you write khmer switches language", state.get("users", {}).get("777", {}).get("lang") == "kh")
+    print(f"phase 3b checks: {len(fails)} failures")
     if fails:
         print("FAILED: " + "; ".join(fails))
         return 1
