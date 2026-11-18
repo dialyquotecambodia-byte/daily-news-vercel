@@ -237,6 +237,29 @@ vendored fonts. To try the KV backend locally, set `STATE_BACKEND=kv` plus
 - Command menu is now 68 commands. Dry-run suite: 54 original fake updates
   + 35 Phase 1 checks, all passing (`python3 bot/superbot.py --test`).
 
+## Phase 2 — Engagement: XP, streaks, tournaments (2026-11-18)
+
+- **XP & levels:** level n needs `50*(n-1)^2` XP (L1 at 0, L2 at 50, L3 at
+  200, L4 at 450). Earn +2 per message (60s cooldown), +10 per correct quiz
+  answer, +15 for winning /guess, +10 for /scramble, +5 for winning /rps,
+  +20 for /checkin, +50 for winning a tournament. Level-ups are announced
+  in chat. XP lives in KV under `xp`.
+- **Streaks:** `/checkin` once a day (Phnom Penh date) keeps the streak
+  alive; a missed day resets it to 1. Stored under `streaks`.
+- **Rank & leaderboard:** `/rank` (level, XP to next level, global rank,
+  streak), `/leaderboard` (top 10 XP + top 5 streaks). Public
+  `GET /api/leaderboard` returns the same board as JSON (CORS open) and
+  feeds a live Leaderboard panel in the Mini App Profile tab.
+- **Tournaments:** `/tournament` in a group starts 5 quiz rounds; the first
+  correct answer scores a point and advances to the next question; the
+  winner gets +50 XP. `/endtournament` ends early (admin or starter).
+  Tournament state lives under `tournaments` / `tournament_polls`.
+- **Digest:** `/digest` sends a personal digest (quote, level, streak,
+  posting schedule), and the morning daily quote now carries a personal
+  streak/level line for each subscriber.
+- Command menu is now 74 commands. Dry-run suite: 54 original + 35 Phase 1
+  + 20 Phase 2 checks, all passing (`python3 bot/superbot.py --test`).
+
 ## Free-tier limits that matter
 
 - **Vercel Hobby functions:** default max 10s per invocation; `vercel.json`
