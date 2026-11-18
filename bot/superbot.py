@@ -318,6 +318,9 @@ HELP_TEXT = (
     "/setflood 8 — how many messages in 10 seconds counts as flooding\n"
     "/setgoodbye Bye {name} — message when a member leaves\n"
     "/fsub @DailyNewsReporter — members must join the channel to chat\n"
+    "/antiraid on — mute newcomers during a join flood\n"
+    "/cleanservice on — delete join/leave notices\n"
+    "/antichannel on — block messages sent as a channel\n"
     "/id — your ID, this group's ID, or a replied user's ID\n"
     "/promote, /demote, /purge — manage admins and clean up fast\n"
     "/settings — settings panel with buttons\n"
@@ -467,6 +470,7 @@ NEWS_TEXT = (
 
 OWNER_ID = 5039926430
 BOT_ID = 9085916191  # @MuseVishnu_bot (public id, not a secret)
+GROUP_ANONYMOUS_BOT_ID = 1087968824  # Telegram's anonymous-admin sender (public id, not a secret)
 
 
 def news_caption(title, summary, source=""):
@@ -628,7 +632,7 @@ def safe_math(expr):
 def track_user(state, message, command=""):
     user = message.get("from") or {}
     uid = str(user.get("id", ""))
-    if not uid:
+    if not uid or uid == str(GROUP_ANONYMOUS_BOT_ID):
         return None
     users = state.setdefault("users", {})
     record = users.setdefault(uid, {"name": user.get("first_name", "friend"), "messages": 0, "quotes": 0, "quizzes": 0, "first_seen": int(time.time()), "last_seen": int(time.time()), "last_command": "", "favourite": "", "lang": "en"})
@@ -662,7 +666,8 @@ def get_group_settings(state, chat_id):
         {"welcome": "", "rules": "", "antilink": False, "antispam": True, "warnings": {},
          "captcha": False, "reports": True, "blacklist_words": [], "blacklist_mode": "delete",
          "blacklist_stickers": [], "notes": {}, "filters": {}, "aimod": False,
-         "locks": {}, "approved": [], "disabled": [], "flood_limit": 5, "goodbye": "", "fsub": ""},
+         "locks": {}, "approved": [], "disabled": [], "flood_limit": 5, "goodbye": "", "fsub": "",
+         "antiraid": False, "cleanservice": False, "antichannel": False},
     )
     settings.setdefault("welcome", "")
     settings.setdefault("rules", "")
@@ -683,6 +688,9 @@ def get_group_settings(state, chat_id):
     settings.setdefault("flood_limit", 5)
     settings.setdefault("goodbye", "")
     settings.setdefault("fsub", "")
+    settings.setdefault("antiraid", False)
+    settings.setdefault("cleanservice", False)
+    settings.setdefault("antichannel", False)
     return settings
 
 
@@ -752,13 +760,13 @@ def locked_type_hit(state, chat_id, sender_id, message, dry_run=False):
 
 
 def is_admin(chat_id, user_id, dry_run=False, sender_chat_id=None):
-    # Anonymous group admins post as the group itself (sender_chat == the group, no "from").
-    if not user_id and sender_chat_id and sender_chat_id == chat_id:
+    # Anonymous group admins: from is GroupAnonymousBot (or absent) and sender_chat == the group.
+    if sender_chat_id and sender_chat_id == chat_id and (not user_id or user_id == GROUP_ANONYMOUS_BOT_ID):
         return True
     if dry_run:
         # In tests, user 111 is the group admin, everyone else is not.
         return user_id == 111
-    if not user_id:
+    if not user_id or user_id == GROUP_ANONYMOUS_BOT_ID:
         # Posting as the group's linked channel (sender_chat == linked_chat_id) is also an admin.
         if sender_chat_id:
             try:
@@ -1359,9 +1367,9 @@ BOT_COMMANDS = [
     ("enable", "Re-enable a command"),
     ("approve", "Exempt a member from enforcement"),
     ("unapprove", "Remove an approval"),
-    ("setflood", "Set the flood limit"),
-    ("setgoodbye", "Set the goodbye message"),
-    ("fsub", "Force members to join a channel"),
+    ("antiraid", "Mute newcomers during a join flood"),
+    ("cleanservice", "Delete join/leave notices"),
+    ("antichannel", "Block messages sent as a channel"),
 ]
 
 
@@ -1617,6 +1625,9 @@ def settings_keyboard(gid, settings):
         [{"text": f"🛡 Anti-spam: {tick(settings.get('antispam'))}", "callback_data": f"set:{gid}:antispam"}],
         [{"text": f"🤖 Captcha: {tick(settings.get('captcha'))}", "callback_data": f"set:{gid}:captcha"}],
         [{"text": f"🚨 Reports: {tick(settings.get('reports'))}", "callback_data": f"set:{gid}:reports"}],
+        [{"text": f"🛡️ Anti-raid: {tick(settings.get('antiraid'))}", "callback_data": f"set:{gid}:antiraid"}],
+        [{"text": f"🧹 Clean service: {tick(settings.get('cleanservice'))}", "callback_data": f"set:{gid}:cleanservice"}],
+        [{"text": f"📺 Anti-channel: {tick(settings.get('antichannel'))}", "callback_data": f"set:{gid}:antichannel"}],
         [{"text": f"🚫 Blacklist: {settings.get('blacklist_mode', 'delete')}", "callback_data": f"set:{gid}:blacklist_mode"}],
         [{"text": "❌ Close", "callback_data": f"set:{gid}:close"}],
     ]}
@@ -1630,6 +1641,9 @@ def settings_text(gid, settings):
         f"🛡 Anti-spam: {'on' if settings.get('antispam') else 'off'}",
         f"🤖 Captcha: {'on' if settings.get('captcha') else 'off'} — new members tap a button to prove they are human",
         f"🚨 Reports: {'on' if settings.get('reports') else 'off'} — members can /report a message to admins",
+        f"🛡️ Anti-raid: {'on' if settings.get('antiraid') else 'off'} — mutes newcomers during a join flood",
+        f"🧹 Clean service: {'on' if settings.get('cleanservice') else 'off'} — deletes join/leave notices",
+        f"📺 Anti-channel: {'on' if settings.get('antichannel') else 'off'} — deletes messages sent as a channel",
         f"🚫 Blacklist mode: {settings.get('blacklist_mode', 'delete')} — what happens on a blacklisted word",
         f"📝 Notes: {len(settings.get('notes', {}))} saved",
         f"🔤 Filters: {len(settings.get('filters', {}))} saved",
@@ -1670,7 +1684,7 @@ def award_xp(state, uid, name, amount):
 
 def award_message_xp(state, uid, name):
     """+2 XP per message, at most once every 60 seconds (anti-farm). Returns new level on level-up."""
-    if not uid:
+    if not uid or str(uid) == str(GROUP_ANONYMOUS_BOT_ID):
         return None
     rec = state.setdefault("xp", {}).setdefault(str(uid), {"xp": 0, "name": name or "friend", "last_msg": 0})
     now_ts = int(time.time())
@@ -1955,6 +1969,10 @@ def handle_update(update, state, dry_run=False):
                 actions[-1]["text"] = "You're in! Good luck! 🍀"
             else:
                 actions[-1]["text"] = "You're already in! 🍀"
+        elif data.startswith("rules:"):
+            gid = int(data.split(":", 1)[1]) if data.split(":", 1)[1].lstrip("-").isdigit() else None
+            rules = get_group_settings(state, gid).get("rules", "") if gid else ""
+            actions.append({"type": "text", "chat_id": chat_id, "text": f"📜 Group rules:\n\n{rules}" if rules else "No rules set yet — admins can set them with /setrules."})
         elif data == "quote":
             actions.append({"type": "text", "chat_id": chat_id, "text": pick_quote("any")})
         elif data == "love":
@@ -2019,7 +2037,7 @@ def handle_update(update, state, dry_run=False):
                     actions.append({"type": "edit", "chat_id": chat_id, "message_id": msg_id, "text": "Settings closed. Send /settings to open them again."})
             else:
                 settings = get_group_settings(state, gid)
-                if key in ("antilink", "antispam", "captcha", "reports"):
+                if key in ("antilink", "antispam", "captcha", "reports", "antiraid", "cleanservice", "antichannel"):
                     settings[key] = not settings.get(key, False)
                 elif key == "blacklist_mode":
                     modes = ["delete", "warn", "mute"]
@@ -2048,6 +2066,16 @@ def handle_update(update, state, dry_run=False):
             actions.append({"type": "ban", "chat_id": chat_id, "user_id": member_id})
             actions.append({"type": "text", "chat_id": chat_id, "text": f"🚫 {name} was banned on joining — federally banned ({_ban.get('reason') or 'no reason given'})."})
             continue
+        # Anti-raid: if many people join at once, mute the newcomers.
+        if settings.get("antiraid") and member_id:
+            now_ts = int(time.time())
+            joins = state.setdefault("join_tracker", {}).setdefault(str(chat_id), [])
+            joins[:] = [t for t in joins if now_ts - t < 60]
+            joins.append(now_ts)
+            if len(joins) >= 5:
+                actions.append({"type": "restrict", "chat_id": chat_id, "user_id": member_id, "until": None, "permissions": {"can_send_messages": False, "can_send_media_messages": False, "can_send_polls": False, "can_send_other_messages": False, "can_add_web_page_previews": False}})
+                actions.append({"type": "text", "chat_id": chat_id, "text": f"🛡️ Anti-raid is on — {name} was muted on joining during a join flood. An admin can unmute them with /unmute."})
+                continue
         # Bots lock: ban bots on join (admins, including this bot itself, are exempt)
         if member.get("is_bot") and settings.get("locks", {}).get("bots") and not is_admin(chat_id, member_id, dry_run=dry_run):
             actions.append({"type": "ban", "chat_id": chat_id, "user_id": member_id})
@@ -2062,8 +2090,11 @@ def handle_update(update, state, dry_run=False):
             continue
         custom = settings.get("welcome", "")
         welcome = custom.replace("{name}", name) if custom else f"Welcome, {name}! So glad you're here. Try /quote for a little kindness, or /help to see what I can do."
-        actions.append({"type": "text", "chat_id": chat_id, "text": welcome})
+        keyboard = {"inline_keyboard": [[{"text": "📜 Rules", "callback_data": f"rules:{chat_id}"}, {"text": "📱 Daily News App", "web_app": {"url": MINI_APP_URL}}]]}
+        actions.append({"type": "text", "chat_id": chat_id, "text": welcome, "keyboard": keyboard})
     if new_members:
+        if get_group_settings(state, chat_id).get("cleanservice"):
+            actions.append({"type": "delete", "chat_id": chat_id, "message_id": message.get("message_id")})
         return actions
 
     # Goodbye message when a member leaves
@@ -2072,6 +2103,8 @@ def handle_update(update, state, dry_run=False):
         goodbye = get_group_settings(state, chat_id).get("goodbye", "")
         if goodbye:
             actions.append({"type": "text", "chat_id": chat_id, "text": goodbye.replace("{name}", left.get("first_name", "friend"))})
+        if get_group_settings(state, chat_id).get("cleanservice"):
+            actions.append({"type": "delete", "chat_id": chat_id, "message_id": message.get("message_id")})
         return actions
 
     # Temporary bans: lift expired ones on the next update in the group.
@@ -2094,6 +2127,13 @@ def handle_update(update, state, dry_run=False):
         _fu = (message.get("from") or {}).get("id")
         if _fs and not is_privileged(state, chat_id, _fu, dry_run=dry_run, sender_chat_id=_schat):
             actions.append({"type": "fsub_check", "chat_id": chat_id, "user_id": _fu, "message_id": message.get("message_id"), "channel": _fs})
+            return actions
+
+    # Anti-channel: block messages sent as a channel (the group's linked channel and admins are exempt).
+    if chat.get("type", "") in ("group", "supergroup"):
+        _sc = message.get("sender_chat") or {}
+        if get_group_settings(state, chat_id).get("antichannel") and _sc.get("type") == "channel" and not is_privileged(state, chat_id, (message.get("from") or {}).get("id"), dry_run=dry_run, sender_chat_id=_schat):
+            actions.append({"type": "delete", "chat_id": chat_id, "message_id": message.get("message_id")})
             return actions
 
     sticker = message.get("sticker") or {}
@@ -2917,7 +2957,7 @@ def handle_update(update, state, dry_run=False):
                 reply("That doesn't look like a backup — I need the JSON from /backup.")
             else:
                 settings = get_group_settings(state, admin_chat)
-                allowed = ("welcome", "rules", "antilink", "antispam", "captcha", "reports", "blacklist_words", "blacklist_mode", "blacklist_stickers", "notes", "filters", "aimod", "locks", "approved", "disabled", "flood_limit", "goodbye", "fsub")
+                allowed = ("welcome", "rules", "antilink", "antispam", "captcha", "reports", "blacklist_words", "blacklist_mode", "blacklist_stickers", "notes", "filters", "aimod", "locks", "approved", "disabled", "flood_limit", "goodbye", "fsub", "antiraid", "cleanservice", "antichannel")
                 restored = [k for k in allowed if k in data]
                 for k in restored:
                     settings[k] = data[k]
@@ -3174,6 +3214,20 @@ def handle_update(update, state, dry_run=False):
                 channel = "@" + channel
             get_group_settings(state, admin_chat)["fsub"] = channel
             reply(f"Force-subscribe is on for {channel}. Non-members' messages will be removed until they join.")
+    elif command in ("/antiraid", "/cleanservice", "/antichannel"):
+        if chat_type not in ("group", "supergroup") and not connected_group:
+            reply("Use this in a group (or connect to one with /connect).")
+        elif not is_admin(admin_chat, sender_id, dry_run=dry_run, sender_chat_id=_schat):
+            reply("Only group admins can change that setting.")
+        else:
+            key = command[1:]
+            if not args.strip():
+                cur = get_group_settings(state, admin_chat).get(key, False)
+                reply(f"{command} is {'on' if cur else 'off'}. Use {command} on or {command} off.")
+            else:
+                on = args.strip().lower() in ("on", "yes", "true", "1")
+                get_group_settings(state, admin_chat)[key] = on
+                reply(f"{command} is now {'on' if on else 'off'}.")
     elif command == "/info":
         title = chat.get("title") or chat.get("first_name") or "this chat"
         reply(f"This is {title} (chat id {chat_id}, type {chat.get('type')}). I'm @MuseVishnu_bot.")
@@ -3434,117 +3488,120 @@ def handle_update(update, state, dry_run=False):
 
 def execute_actions(actions, state):
     for action in actions:
-        if action["type"] == "text":
-            send_message(action["chat_id"], action["text"], reply_markup=action.get("keyboard"))
-        elif action["type"] == "photo":
-            path = make_quote_image(action["quote"])
-            try:
-                send_photo(action["chat_id"], path, caption=action.get("caption", ""))
-            finally:
+        try:
+            if action["type"] == "text":
+                send_message(action["chat_id"], action["text"], reply_markup=action.get("keyboard"))
+            elif action["type"] == "photo":
+                path = make_quote_image(action["quote"])
                 try:
-                    os.remove(path)
-                except OSError:
-                    pass
-        elif action["type"] == "story":
-            path = make_story_image(action["quote"])
-            try:
-                send_photo(action["chat_id"], path, caption=action.get("caption", ""))
-            finally:
+                    send_photo(action["chat_id"], path, caption=action.get("caption", ""))
+                finally:
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
+            elif action["type"] == "story":
+                path = make_story_image(action["quote"])
                 try:
-                    os.remove(path)
-                except OSError:
-                    pass
-        elif action["type"] == "quiz":
-            q = action["question"]
-            result = send_poll(action["chat_id"], q["q"], q["options"], is_quiz=True, correct=q["correct"], explanation=q["explain"])
-            poll_id = (result.get("result") or {}).get("poll", {}).get("id")
-            if poll_id:
-                state["quiz_polls"][poll_id] = {"chat_id": action["chat_id"], "correct": q["correct"], "options": q["options"], "explain": q["explain"]}
-                if action.get("tournament"):
-                    state.setdefault("tournament_polls", {})[poll_id] = action["chat_id"]
-                    t = state.get("tournaments", {}).get(str(action["chat_id"]))
-                    if t:
-                        t["current_poll"] = poll_id
-                save_state(state)
-        elif action["type"] == "poll":
-            send_poll(action["chat_id"], action["question"], action["options"])
-        elif action["type"] == "callback":
-            try:
-                api_call("answerCallbackQuery", {"callback_query_id": action["callback_id"], "text": action.get("text", "")})
-            except Exception as e:
-                print(f"answerCallbackQuery failed: {e}", flush=True)
-        elif action["type"] == "inline":
-            try:
-                api_call("answerInlineQuery", {"inline_query_id": action["inline_query_id"], "results": action["results"], "cache_time": 60, "is_personal": True})
-            except Exception as e:
-                print(f"answerInlineQuery failed: {e}", flush=True)
-        elif action["type"] == "dice":
-            try:
-                api_call("sendDice", {"chat_id": action["chat_id"], "emoji": action["emoji"]})
-            except Exception as e:
-                print(f"sendDice failed: {e}", flush=True)
-        elif action["type"] == "ban":
-            payload = {"chat_id": action["chat_id"], "user_id": action["user_id"]}
-            if action.get("until"):
-                payload["until_date"] = action["until"]
-            api_call("banChatMember", payload)
-            print(f"banned {action['user_id']} in {action['chat_id']}", flush=True)
-        elif action["type"] == "unban":
-            api_call("unbanChatMember", {"chat_id": action["chat_id"], "user_id": action["user_id"]})
-            print(f"unbanned {action['user_id']} in {action['chat_id']}", flush=True)
-        elif action["type"] == "fsub_check":
-            try:
-                res = api_call("getChatMember", {"chat_id": action["channel"], "user_id": action["user_id"]})
-                status = (res.get("result") or {}).get("status")
-                if status in ("left", "kicked"):
-                    api_call("deleteMessage", {"chat_id": action["chat_id"], "message_id": action["message_id"]})
-                    send_message(action["chat_id"], f"Join {action['channel']} to chat here — then send your message again.")
-            except Exception as e:
-                print(f"fsub check failed: {e}", flush=True)
-        elif action["type"] == "restrict":
-            payload = {"chat_id": action["chat_id"], "user_id": action["user_id"], "permissions": action["permissions"]}
-            if action.get("until"):
-                payload["until_date"] = action["until"]
-            api_call("restrictChatMember", payload)
-            print(f"restricted {action['user_id']} in {action['chat_id']}", flush=True)
-        elif action["type"] == "delete":
-            api_call("deleteMessage", {"chat_id": action["chat_id"], "message_id": action["message_id"]})
-            print(f"deleted message {action['message_id']} in {action['chat_id']}", flush=True)
-        elif action["type"] == "pin":
-            api_call("pinChatMessage", {"chat_id": action["chat_id"], "message_id": action["message_id"]})
-            print(f"pinned message {action['message_id']} in {action['chat_id']}", flush=True)
-        elif action["type"] == "unpin":
-            api_call("unpinChatMessage", {"chat_id": action["chat_id"]})
-            print(f"unpinned in {action['chat_id']}", flush=True)
-        elif action["type"] == "set_permissions":
-            api_call("setChatPermissions", {"chat_id": action["chat_id"], "permissions": action["permissions"]})
-            print(f"set chat permissions in {action['chat_id']}", flush=True)
-        elif action["type"] == "promote":
-            if action.get("promote"):
-                perms = {"can_change_info": False, "can_delete_messages": True, "can_invite_users": True, "can_restrict_members": True, "can_pin_messages": True, "can_promote_members": False, "can_manage_chat": False, "can_manage_video_chats": False, "can_post_stories": False, "can_edit_stories": False, "can_delete_stories": False}
-            else:
-                perms = {"can_change_info": False, "can_delete_messages": False, "can_invite_users": False, "can_restrict_members": False, "can_pin_messages": False, "can_promote_members": False, "can_manage_chat": False, "can_manage_video_chats": False, "can_post_stories": False, "can_edit_stories": False, "can_delete_stories": False}
-            api_call("promoteChatMember", {"chat_id": action["chat_id"], "user_id": action["user_id"], **perms})
-            print(f"{'promoted' if action.get('promote') else 'demoted'} {action['user_id']} in {action['chat_id']}", flush=True)
-        elif action["type"] == "edit":
-            try:
-                payload = {"chat_id": action["chat_id"], "message_id": action["message_id"], "text": action["text"]}
+                    send_photo(action["chat_id"], path, caption=action.get("caption", ""))
+                finally:
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
+            elif action["type"] == "quiz":
+                q = action["question"]
+                result = send_poll(action["chat_id"], q["q"], q["options"], is_quiz=True, correct=q["correct"], explanation=q["explain"])
+                poll_id = (result.get("result") or {}).get("poll", {}).get("id")
+                if poll_id:
+                    state["quiz_polls"][poll_id] = {"chat_id": action["chat_id"], "correct": q["correct"], "options": q["options"], "explain": q["explain"]}
+                    if action.get("tournament"):
+                        state.setdefault("tournament_polls", {})[poll_id] = action["chat_id"]
+                        t = state.get("tournaments", {}).get(str(action["chat_id"]))
+                        if t:
+                            t["current_poll"] = poll_id
+                    save_state(state)
+            elif action["type"] == "poll":
+                send_poll(action["chat_id"], action["question"], action["options"])
+            elif action["type"] == "callback":
+                try:
+                    api_call("answerCallbackQuery", {"callback_query_id": action["callback_id"], "text": action.get("text", "")})
+                except Exception as e:
+                    print(f"answerCallbackQuery failed: {e}", flush=True)
+            elif action["type"] == "inline":
+                try:
+                    api_call("answerInlineQuery", {"inline_query_id": action["inline_query_id"], "results": action["results"], "cache_time": 60, "is_personal": True})
+                except Exception as e:
+                    print(f"answerInlineQuery failed: {e}", flush=True)
+            elif action["type"] == "dice":
+                try:
+                    api_call("sendDice", {"chat_id": action["chat_id"], "emoji": action["emoji"]})
+                except Exception as e:
+                    print(f"sendDice failed: {e}", flush=True)
+            elif action["type"] == "ban":
+                payload = {"chat_id": action["chat_id"], "user_id": action["user_id"]}
+                if action.get("until"):
+                    payload["until_date"] = action["until"]
+                api_call("banChatMember", payload)
+                print(f"banned {action['user_id']} in {action['chat_id']}", flush=True)
+            elif action["type"] == "unban":
+                api_call("unbanChatMember", {"chat_id": action["chat_id"], "user_id": action["user_id"]})
+                print(f"unbanned {action['user_id']} in {action['chat_id']}", flush=True)
+            elif action["type"] == "fsub_check":
+                try:
+                    res = api_call("getChatMember", {"chat_id": action["channel"], "user_id": action["user_id"]})
+                    status = (res.get("result") or {}).get("status")
+                    if status in ("left", "kicked"):
+                        api_call("deleteMessage", {"chat_id": action["chat_id"], "message_id": action["message_id"]})
+                        send_message(action["chat_id"], f"Join {action['channel']} to chat here — then send your message again.")
+                except Exception as e:
+                    print(f"fsub check failed: {e}", flush=True)
+            elif action["type"] == "restrict":
+                payload = {"chat_id": action["chat_id"], "user_id": action["user_id"], "permissions": action["permissions"]}
+                if action.get("until"):
+                    payload["until_date"] = action["until"]
+                api_call("restrictChatMember", payload)
+                print(f"restricted {action['user_id']} in {action['chat_id']}", flush=True)
+            elif action["type"] == "delete":
+                api_call("deleteMessage", {"chat_id": action["chat_id"], "message_id": action["message_id"]})
+                print(f"deleted message {action['message_id']} in {action['chat_id']}", flush=True)
+            elif action["type"] == "pin":
+                api_call("pinChatMessage", {"chat_id": action["chat_id"], "message_id": action["message_id"]})
+                print(f"pinned message {action['message_id']} in {action['chat_id']}", flush=True)
+            elif action["type"] == "unpin":
+                api_call("unpinChatMessage", {"chat_id": action["chat_id"]})
+                print(f"unpinned in {action['chat_id']}", flush=True)
+            elif action["type"] == "set_permissions":
+                api_call("setChatPermissions", {"chat_id": action["chat_id"], "permissions": action["permissions"]})
+                print(f"set chat permissions in {action['chat_id']}", flush=True)
+            elif action["type"] == "promote":
+                if action.get("promote"):
+                    perms = {"can_change_info": False, "can_delete_messages": True, "can_invite_users": True, "can_restrict_members": True, "can_pin_messages": True, "can_promote_members": False, "can_manage_chat": False, "can_manage_video_chats": False, "can_post_stories": False, "can_edit_stories": False, "can_delete_stories": False}
+                else:
+                    perms = {"can_change_info": False, "can_delete_messages": False, "can_invite_users": False, "can_restrict_members": False, "can_pin_messages": False, "can_promote_members": False, "can_manage_chat": False, "can_manage_video_chats": False, "can_post_stories": False, "can_edit_stories": False, "can_delete_stories": False}
+                api_call("promoteChatMember", {"chat_id": action["chat_id"], "user_id": action["user_id"], **perms})
+                print(f"{'promoted' if action.get('promote') else 'demoted'} {action['user_id']} in {action['chat_id']}", flush=True)
+            elif action["type"] == "edit":
+                try:
+                    payload = {"chat_id": action["chat_id"], "message_id": action["message_id"], "text": action["text"]}
+                    if action.get("keyboard"):
+                        payload["reply_markup"] = action["keyboard"]
+                    api_call("editMessageText", payload)
+                except Exception as e:
+                    print(f"editMessageText failed: {e}", flush=True)
+            elif action["type"] == "invoice":
+                # Telegram Stars: provider_token must be empty for XTR.
+                payload = {"chat_id": action["chat_id"], "title": action["title"], "description": action["description"], "payload": action["payload"], "provider_token": "", "currency": action.get("currency", "XTR"), "prices": action["prices"]}
                 if action.get("keyboard"):
                     payload["reply_markup"] = action["keyboard"]
-                api_call("editMessageText", payload)
-            except Exception as e:
-                print(f"editMessageText failed: {e}", flush=True)
-        elif action["type"] == "invoice":
-            # Telegram Stars: provider_token must be empty for XTR.
-            payload = {"chat_id": action["chat_id"], "title": action["title"], "description": action["description"], "payload": action["payload"], "provider_token": "", "currency": action.get("currency", "XTR"), "prices": action["prices"]}
-            if action.get("keyboard"):
-                payload["reply_markup"] = action["keyboard"]
-            api_call("sendInvoice", payload)
-            print(f"sent invoice to {action['chat_id']}", flush=True)
-        elif action["type"] == "precheckout":
-            api_call("answerPreCheckoutQuery", {"pre_checkout_query_id": action["query_id"], "ok": action.get("ok", True)})
-            print(f"answered pre-checkout {action['query_id']}", flush=True)
-        time.sleep(0.3)
+                api_call("sendInvoice", payload)
+                print(f"sent invoice to {action['chat_id']}", flush=True)
+            elif action["type"] == "precheckout":
+                api_call("answerPreCheckoutQuery", {"pre_checkout_query_id": action["query_id"], "ok": action.get("ok", True)})
+                print(f"answered pre-checkout {action['query_id']}", flush=True)
+            time.sleep(0.3)
+        except Exception as e:
+            print("action " + str(action.get("type")) + " failed: " + str(e), flush=True)
 
 
 def check_reminders(state):
@@ -4244,6 +4301,52 @@ def run_tests():
     finally:
         globals()["api_call"] = _real_api
     print(f"phase 7 checks: {len(fails)} failures")
+    if fails:
+        print("FAILED: " + "; ".join(fails))
+        return 1
+
+    # Phase 8 (full upgrade: anonymous-bot fix, anti-raid, welcome buttons, cleanservice, antichannel) tests.
+    fails = []
+    def check8(label, cond):
+        print(("PASS " if cond else "FAIL ") + label)
+        if not cond:
+            fails.append(label)
+    anon_bot = {"id": 1087968824, "first_name": "GroupAnonymousBot"}
+
+    # Anonymous admins really send as GroupAnonymousBot — they are admins, and they earn no XP or user record.
+    a = handle_update({"update_id": 901, "message": {"chat": group, "from": anon_bot, "sender_chat": {"id": -100123}, "text": "/lock photo"}}, state, dry_run=True)
+    check8("anonymous bot is an admin", state.get("group_settings", {}).get("-100123", {}).get("locks", {}).get("photo") is True)
+    check8("anonymous bot gets no user record", "1087968824" not in state.get("users", {}))
+    check8("anonymous bot gets no XP", "1087968824" not in state.get("xp", {}))
+    # Welcome now carries Rules + Mini App buttons (captcha is off from the Phase 1 tests, turn it off to be sure).
+    handle_update({"update_id": 9015, "message": {"chat": group, "from": admin, "text": "/captcha off"}}, state, dry_run=True)
+    a = handle_update({"update_id": 902, "message": {"chat": group, "new_chat_members": [{"id": 600, "first_name": "Sophea"}]}}, state, dry_run=True)
+    check8("welcome has Rules and App buttons", any(x.get("type") == "text" and x.get("keyboard") and "Rules" in str(x.get("keyboard")) and "Daily News App" in str(x.get("keyboard")) for x in a))
+    # Rules button shows the rules.
+    handle_update({"update_id": 903, "message": {"chat": group, "from": admin, "text": "/setrules Be kind."}}, state, dry_run=True)
+    a = handle_update({"update_id": 904, "callback_query": {"id": "cb9", "from": {"id": 600, "first_name": "Sophea"}, "data": "rules:-100123", "message": {"chat": group, "message_id": 70}}}, state, dry_run=True)
+    check8("rules button shows the rules", any("Be kind" in t for t in texts(a)))
+    # Anti-raid: the 5th rapid join is muted.
+    handle_update({"update_id": 905, "message": {"chat": group, "from": admin, "text": "/antiraid on"}}, state, dry_run=True)
+    check8("antiraid turns on", state.get("group_settings", {}).get("-100123", {}).get("antiraid") is True)
+    raided = None
+    for i, uid in enumerate((601, 602, 603, 604, 605)):
+        raided = handle_update({"update_id": 906 + i, "message": {"chat": group, "new_chat_members": [{"id": uid, "first_name": f"Raider{i}"}]}}, state, dry_run=True)
+    check8("5th rapid join is muted", any(x.get("type") == "restrict" and x.get("user_id") == 605 for x in raided))
+    # Clean service: join/leave notices are deleted.
+    handle_update({"update_id": 911, "message": {"chat": group, "from": admin, "text": "/cleanservice on"}}, state, dry_run=True)
+    a = handle_update({"update_id": 912, "message": {"chat": group, "new_chat_members": [{"id": 606, "first_name": "Clean"}], "message_id": 71}}, state, dry_run=True)
+    check8("join notice is deleted", any(x.get("type") == "delete" and x.get("message_id") == 71 for x in a))
+    a = handle_update({"update_id": 913, "message": {"chat": group, "left_chat_member": {"id": 606, "first_name": "Clean"}, "message_id": 72}}, state, dry_run=True)
+    check8("leave notice is deleted", any(x.get("type") == "delete" and x.get("message_id") == 72 for x in a))
+    # Anti-channel: a random channel's message is deleted.
+    handle_update({"update_id": 914, "message": {"chat": group, "from": admin, "text": "/antichannel on"}}, state, dry_run=True)
+    a = handle_update({"update_id": 915, "message": {"chat": group, "sender_chat": {"id": -100999, "type": "channel", "title": "Spam"}, "text": "hello", "message_id": 73}}, state, dry_run=True)
+    check8("random channel message is deleted", any(x.get("type") == "delete" and x.get("message_id") == 73 for x in a))
+    # Settings panel shows the new toggles.
+    a = handle_update({"update_id": 916, "message": {"chat": group, "from": admin, "text": "/settings"}}, state, dry_run=True)
+    check8("settings panel shows anti-raid", any("Anti-raid" in t for t in texts(a)))
+    print(f"phase 8 checks: {len(fails)} failures")
     if fails:
         print("FAILED: " + "; ".join(fails))
         return 1
