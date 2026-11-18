@@ -193,6 +193,27 @@ KHMER_QUOTES = [
     "ភាពសប្បុរសគឺឥតគិតថ្លៃ។ ចែករំលែកវាគ្រប់ទីកន្លែង។",
     "មិត្តល្អធ្វើឲ្យថ្ងៃលំបាកកាន់តែស្រាល និងថ្ងៃល្អកាន់តែភ្លឺ។",
     "ចាប់ផ្តើមពីកន្លែងដែលអ្នកនៅ។ ប្រើអ្វីដែលអ្នកមាន។ ធ្វើអ្វីដែលអ្នកអាចធ្វើបាន។",
+    "កុំបោះបង់។ ថ្ងៃស្អែកអាចជាថ្ងៃរបស់អ្នក។",
+    "ការសិក្សាគឺជាគន្លឹះបើកទ្វារអនាគត។",
+    "ស្នាមញញឹមគឺជាភាសាសកល។",
+    "ធ្វើល្អដោយមិនរំពឹងការតបស្នង។",
+    "គ្រប់បញ្ហាមានដំណោះស្រាយ។",
+    "មនុស្សដែលព្យាយាមមិនចាញ់ឡើយ។",
+    "សេចក្តីសុខចាប់ផ្តើមពីចិត្តស្ងប់។",
+    "ជឿជាក់លើខ្លួនឯង។ អ្នកអាចធ្វើបាន។",
+]
+
+KHMER_QUIZ_QUESTIONS = [
+    {"q": "រាជធានីនៃប្រទេសកម្ពុជាគឺអ្វី?", "options": ["ភ្នំពេញ", "សៀមរាប", "បាត់ដំបង", "កំពត"], "correct": 0, "explain": "ភ្នំពេញគឺជារាជធានីនៃប្រទេសកម្ពុជា។"},
+    {"q": "ភាសាផ្លូវការនៃប្រទេសកម្ពុជាគឺអ្វី?", "options": ["ថៃ", "វៀតណាម", "ខ្មែរ", "ឡាវ"], "correct": 2, "explain": "ខ្មែរគឺជាភាសាផ្លូវការនៃប្រទេសកម្ពុជា។"},
+    {"q": "ប្រាសាទដ៏ធំបំផុតនៅលើពិភពលោកនៅកម្ពុជាគឺអ្វី?", "options": ["អង្គរវត្ត", "ប្រាសាទបាយ័ន", "ប្រាសាទតាព្រហ្ម", "ប្រាសាទបន្ទាយស្រី"], "correct": 0, "explain": "អង្គរវត្តគឺជាប្រាសាទដ៏ធំបំផុតនៅលើពិភពលោក។"},
+    {"q": "ទន្លេណាហូរកាត់ភ្នំពេញ?", "options": ["ទន្លេមេគង្គ", "ទន្លេនីល", "ទន្លេអាម៉ាហ្សូន", "ទន្លេដានូប"], "correct": 0, "explain": "ទន្លេមេគង្គហូរកាត់ភ្នំពេញ។"},
+    {"q": "៧ គុណ ៨ ស្មើនឹងប៉ុន្មាន?", "options": ["៥៤", "៥៦", "៤៨", "៦៤"], "correct": 1, "explain": "៧ គុណ ៨ ស្មើនឹង ៥៦។"},
+    {"q": "សត្វណាដែលត្រូវបានគេហៅថាមិត្តល្អបំផុតរបស់មនុស្ស?", "options": ["ឆ្មា", "សេះ", "ឆ្កែ", "សេក"], "correct": 2, "explain": "ឆ្កែត្រូវបានគេហៅថាមិត្តល្អបំផុតរបស់មនុស្ស។"},
+    {"q": "ឆ្នាំណាដែលមាន ៣៦៦ ថ្ងៃ?", "options": ["ឆ្នាំធម្មតា", "ឆ្នាំបង្គ្រប់", "ឆ្នាំថ្មី", "ឆ្នាំចាស់"], "correct": 1, "explain": "ឆ្នាំដែលមាន ៣៦៦ ថ្ងៃគឺជាឆ្នាំបង្គ្រប់។"},
+    {"q": "ភពណាដែលត្រូវបានគេស្គាល់ថាជាភពក្រហម?", "options": ["ភពសុក្រ", "ភពអង្គារ", "ភពព្រហស្បតិ៍", "ភពសៅរ៍"], "correct": 1, "explain": "ភពអង្គារគឺជាភពក្រហម។"},
+    {"q": "១៥ បូក ១៥ ស្មើនឹងប៉ុន្មាន?", "options": ["២៥", "៣០", "៣៥", "២០"], "correct": 1, "explain": "១៥ បូក ១៥ ស្មើនឹង ៣០។"},
+    {"q": "AI មានន័យថាអ្វី?", "options": ["អ៊ីនធឺណិតស្វ័យប្រវត្តិ", "បញ្ញាសិប្បនិម្មិត", "ព័ត៌មានកម្រិតខ្ពស់", "បញ្ញាស្វ័យប្រវត្តិ"], "correct": 1, "explain": "AI មានន័យថា បញ្ញាសិប្បនិម្មិត។"},
 ]
 JOKES = [
     "Why did the scarecrow win an award? Because he was outstanding in his field.",
@@ -265,7 +286,7 @@ HELP_TEXT = (
     "/quote — a daily quote\n"
     "/love — a love quote\n"
     "/friend — a friendship quote\n"
-    "/khmer — a quote in Khmer\n"
+    "/khmer — a quote in Khmer (16 quotes)\n"
     "/quoteimg — a quote as a shareable image\n"
     "/loveimg — a love quote as an image\n"
     "/friendimg — a friendship quote as an image\n"
@@ -282,6 +303,7 @@ HELP_TEXT = (
     "/postnews <title> | <summary> | <source> — owner only, post news to the channel\n\n"
     "Games & fun\n"
     "/quiz — a quiz question (30 questions!)\n"
+    "/khmerquiz — a quiz question in Khmer (10 questions!)\n"
     "/guess — guess my number, 1 to 100\n"
     "/rps — rock, paper, scissors\n"
     "/dice — roll a dice 🎲\n"
@@ -403,7 +425,7 @@ WELCOME_POST_TEXT = (
     "/freeai — free AI tools\n"
     "/invite — free invite codes\n"
     "/quote — a daily quote\n"
-    "/khmer — a quote in Khmer\n"
+    "/khmer — a quote in Khmer (16 quotes)\n"
     "/quiz — play a quiz\n\n"
     "Share this channel with a friend who loves tech and AI.\n"
     "#DailyNews #AINews #TechNews"
@@ -425,7 +447,7 @@ BOT_DESCRIPTION = (
     "/freeai — free AI tools\n"
     "/invite — free invite codes\n"
     "/quote — a daily quote\n"
-    "/khmer — a quote in Khmer\n"
+    "/khmer — a quote in Khmer (16 quotes)\n"
     "/quiz — play a quiz\n"
     "/schedule — posting times\n\n"
     "Channel: @dailynewsreporter"
@@ -644,7 +666,7 @@ def track_user(state, message, command=""):
         if command in ("/quote", "/love", "/friend", "/khmer"):
             record["quotes"] += 1
             record["favourite"] = command
-        if command == "/quiz":
+        if command in ("/quiz", "/khmerquiz"):
             record["quizzes"] += 1
     stats = state.setdefault("stats", {})
     stats["messages"] = stats.get("messages", 0) + 1
@@ -655,7 +677,7 @@ def track_user(state, message, command=""):
         stats["quotes_sent"] = stats.get("quotes_sent", 0) + 1
     if command in ("/quoteimg", "/loveimg", "/friendimg", "/khmerimg"):
         stats["photos_sent"] = stats.get("photos_sent", 0) + 1
-    if command == "/quiz":
+    if command in ("/quiz", "/khmerquiz"):
         stats["quizzes_sent"] = stats.get("quizzes_sent", 0) + 1
     return record
 
@@ -1295,6 +1317,7 @@ BOT_COMMANDS = [
     ("daily", "Daily quote every morning"),
     ("stopdaily", "Stop daily quotes"),
     ("quiz", "Play a quiz (30 questions)"),
+    ("khmerquiz", "A quiz question in Khmer"),
     ("guess", "Guess my number, 1 to 100"),
     ("rps", "Rock, paper, scissors"),
     ("dice", "Roll a dice"),
@@ -1501,6 +1524,7 @@ def hide_menu_keyboard():
 GAMES_MENU_TEXT = (
     "🎮 Games — pick one:\n\n"
     "/quiz — a quiz question (30 questions!)\n"
+    "/khmerquiz — a quiz question in Khmer (10 questions!)\n"
     "/guess — guess my number, 1 to 100\n"
     "/rps — rock, paper, scissors\n"
     "/dice 🎲  /darts 🎯  /bowling 🎳\n"
@@ -1913,12 +1937,20 @@ def handle_update(update, state, dry_run=False):
                 score["correct"] += 1
                 leveled = award_xp(state, user.get("id"), user.get("first_name", "Player"), 10)
                 amt = xp_amount(state, user.get("id"), 10)
-                msg = f"Correct, {score['name']}! {quiz.get('explain', '')} Your score: {score['correct']}/{score['total']} (+{amt} XP)"
-                if leveled:
-                    msg += f"\n🎉 LEVEL UP! You are now Level {leveled}!"
+                if quiz.get("khmer"):
+                    msg = f"ត្រឹមត្រូវ {score['name']}! {quiz.get('explain', '')} ពិន្ទុរបស់អ្នក៖ {score['correct']}/{score['total']} (+{amt} XP)"
+                    if leveled:
+                        msg += f"\n🎉 ឡើងកម្រិត! ឥឡូវនេះអ្នកគឺកម្រិត {leveled}!"
+                else:
+                    msg = f"Correct, {score['name']}! {quiz.get('explain', '')} Your score: {score['correct']}/{score['total']} (+{amt} XP)"
+                    if leveled:
+                        msg += f"\n🎉 LEVEL UP! You are now Level {leveled}!"
                 actions.append({"type": "text", "chat_id": quiz["chat_id"], "text": msg})
             else:
-                actions.append({"type": "text", "chat_id": quiz["chat_id"], "text": f"Not quite, {score['name']}. The answer was: {quiz['options'][quiz['correct']]}. Your score: {score['correct']}/{score['total']}"})
+                if quiz.get("khmer"):
+                    actions.append({"type": "text", "chat_id": quiz["chat_id"], "text": f"មិនទាន់ត្រឹមត្រូវទេ {score['name']}។ ចម្លើយត្រឹមត្រូវគឺ៖ {quiz['options'][quiz['correct']]}។ ពិន្ទុរបស់អ្នក៖ {score['correct']}/{score['total']}"})
+                else:
+                    actions.append({"type": "text", "chat_id": quiz["chat_id"], "text": f"Not quite, {score['name']}. The answer was: {quiz['options'][quiz['correct']]}. Your score: {score['correct']}/{score['total']}"})
             # Tournament: first correct answer per question scores a point and advances.
             tchat = state.get("tournament_polls", {}).get(poll_id)
             if tchat is not None and correct:
@@ -3251,6 +3283,9 @@ def handle_update(update, state, dry_run=False):
     elif command == "/quiz":
         q = random.choice(QUIZ_QUESTIONS)
         actions.append({"type": "quiz", "chat_id": chat_id, "question": q})
+    elif command == "/khmerquiz":
+        q = random.choice(KHMER_QUIZ_QUESTIONS)
+        actions.append({"type": "quiz", "chat_id": chat_id, "question": q, "khmer": True})
     elif command == "/poll":
         parts = [p.strip() for p in args.split("|")]
         if len(parts) < 3:
@@ -3514,7 +3549,7 @@ def execute_actions(actions, state):
                 result = send_poll(action["chat_id"], q["q"], q["options"], is_quiz=True, correct=q["correct"], explanation=q["explain"])
                 poll_id = (result.get("result") or {}).get("poll", {}).get("id")
                 if poll_id:
-                    state["quiz_polls"][poll_id] = {"chat_id": action["chat_id"], "correct": q["correct"], "options": q["options"], "explain": q["explain"]}
+                    state["quiz_polls"][poll_id] = {"chat_id": action["chat_id"], "correct": q["correct"], "options": q["options"], "explain": q["explain"], "khmer": action.get("khmer", False)}
                     if action.get("tournament"):
                         state.setdefault("tournament_polls", {})[poll_id] = action["chat_id"]
                         t = state.get("tournaments", {}).get(str(action["chat_id"]))
@@ -4347,6 +4382,30 @@ def run_tests():
     a = handle_update({"update_id": 916, "message": {"chat": group, "from": admin, "text": "/settings"}}, state, dry_run=True)
     check8("settings panel shows anti-raid", any("Anti-raid" in t for t in texts(a)))
     print(f"phase 8 checks: {len(fails)} failures")
+    if fails:
+        print("FAILED: " + "; ".join(fails))
+        return 1
+
+    # Phase 9 (Phase 7 Khmer everywhere) tests.
+    fails = []
+    def check9(label, cond):
+        print(("PASS " if cond else "FAIL ") + label)
+        if not cond:
+            fails.append(label)
+    check9("16 Khmer quotes", len(KHMER_QUOTES) == 16)
+    check9("10 Khmer quiz questions", len(KHMER_QUIZ_QUESTIONS) == 10)
+    check9("Khmer quiz questions are all Khmer", all(q["q"] and q["options"] and q["explain"] for q in KHMER_QUIZ_QUESTIONS))
+    # /khmerquiz sends a quiz poll action flagged as Khmer.
+    a = handle_update({"update_id": 921, "message": {"chat": group, "from": admin, "text": "/khmerquiz"}}, state, dry_run=True)
+    check9("khmerquiz sends a Khmer quiz action", any(x.get("type") == "quiz" and x.get("khmer") is True and x.get("question") in KHMER_QUIZ_QUESTIONS for x in a))
+    # A Khmer quiz answer scores with Khmer reply text.
+    state.setdefault("quiz_polls", {})["pollkh"] = {"chat_id": -100123, "correct": 0, "options": ["ភ្នំពេញ", "សៀមរាប", "បាត់ដំបង", "កំពត"], "explain": "ភ្នំពេញគឺជារាជធានីនៃប្រទេសកម្ពុជា។", "khmer": True}
+    a = handle_update({"update_id": 922, "poll_answer": {"poll_id": "pollkh", "user": {"id": 777, "first_name": "Player"}, "option_ids": [0]}}, state, dry_run=True)
+    check9("Khmer quiz correct answer replies in Khmer", any("ត្រឹមត្រូវ" in t for t in texts(a)))
+    state.setdefault("quiz_polls", {})["pollkh2"] = {"chat_id": -100123, "correct": 0, "options": ["ភ្នំពេញ", "សៀមរាប", "បាត់ដំបង", "កំពត"], "explain": "ភ្នំពេញគឺជារាជធានីនៃប្រទេសកម្ពុជា។", "khmer": True}
+    a = handle_update({"update_id": 923, "poll_answer": {"poll_id": "pollkh2", "user": {"id": 777, "first_name": "Player"}, "option_ids": [1]}}, state, dry_run=True)
+    check9("Khmer quiz wrong answer replies in Khmer", any("មិនទាន់ត្រឹមត្រូវ" in t for t in texts(a)))
+    print(f"phase 9 checks: {len(fails)} failures")
     if fails:
         print("FAILED: " + "; ".join(fails))
         return 1
