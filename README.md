@@ -282,6 +282,36 @@ vendored fonts. To try the KV backend locally, set `STATE_BACKEND=kv` plus
   + 20 Phase 2 + 15 Phase 3 checks, all passing
   (`python3 bot/superbot.py --test`).
 
+## Phase 4 — Growth & Premium: referrals, Telegram Stars, stats (2026-11-18)
+
+- **Referrals:** every user gets a permanent invite code and link
+  (`https://t.me/MuseVishnu_bot?start=ref_DNXXXXXX`). `/referral` shows the
+  link and how many friends joined; `/topreferrers` lists the top 5
+  inviters. A new user who joins through a link gets +20 XP and the
+  referrer gets +50 XP, counted once, never for self-referrals or repeat
+  joins; the referrer is notified in a DM.
+- **Premium with Telegram Stars:** `/premium` shows status, or sends a
+  Stars invoice — 150 Stars, lifetime, XTR currency, empty provider token,
+  payload `premium_<uid>`, with a pay button. Pre-checkout queries are
+  approved; a successful payment awards a flat +50 XP welcome bonus and
+  then unlocks Premium. Perks: double XP on everything and a ⭐ badge in
+  `/rank`, `/leaderboard` and the Mini App leaderboard (the
+  `/api/leaderboard` response carries `"premium": true/false` per player).
+- **Language switch (Khmer fix):** saying "Reply in Khmer" / "Reply in
+  English" stores the preference per user; the AI answers in that language.
+  Plain messages in private chats now ask the AI instead of the canned
+  "Thanks, you have sent me N messages" reply; groups keep the short
+  thanks reply.
+- **Stats endpoint:** public `GET /api/stats` returns users, messages,
+  quotes sent, photos sent, quizzes sent, Premium count, subscribers, XP
+  players and total referrals. The Mini App Profile tab has a "Bot stats"
+  panel that fetches it.
+- **Inline mode is still NOT enabled:** `getMe` reports
+  `supports_inline_queries: false` (checked 2026-11-18 23:43). The owner
+  still needs @BotFather → `/setinline` → @MuseVishnu_bot → placeholder.
+- Command menu is now 82 commands. Dry-run suite: 54 + 35 + 20 + 15 + 6
+  Khmer + 17 Phase 4 checks, all passing.
+
 ## Free-tier limits that matter
 
 - **Vercel Hobby functions:** default max 10s per invocation; `vercel.json`
