@@ -84,6 +84,9 @@ def stats_get():
         "subscribers": len(state.get("subscribers", [])),
         "xp_players": len(state.get("xp", {})),
         "referrals": sum(r.get("count", 0) for r in state.get("referrals", {}).values()),
+        "shop_stars": state.get("shop_revenue", {}).get("stars", 0),
+        "shop_sales": state.get("shop_revenue", {}).get("sales", 0),
+        "sponsored": len(state.get("sponsored_posts", [])),
     }}, 200
 
 

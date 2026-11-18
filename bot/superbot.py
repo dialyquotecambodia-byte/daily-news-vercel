@@ -377,7 +377,11 @@ HELP_TEXT = (
     "Growth & Premium\n"
     "/referral — your invite link, friends get +20 XP, you get +50 XP each\n"
     "/topreferrers — who invited the most friends\n"
-    "/premium — 150 Stars for lifetime Premium: double XP and a ⭐ badge\n\n"
+    "/premium — 150 Stars for lifetime Premium: double XP and a ⭐ badge\n"
+    "/shop — Stars shop: XP Boost (50), custom quote image (30), Premium (150)\n"
+    "/customquote <your words> — turn your words into a quote image (needs a credit from /shop)\n"
+    "/sponsor <message> — owner only, post a sponsored message to the channel\n"
+    "/analytics — owner only, users, messages, shop sales and top commands\n\n"
     "Channel & content (owner)\n"
     "/broadcast — send a message to every subscriber\n"
     "/schedulepost 18:30 text — queue a channel post, /scheduled to list, /cancelschedule to cancel\n\n"
@@ -592,6 +596,10 @@ def load_state():
     state.setdefault("referrals", {})
     state.setdefault("referred_by", {})
     state.setdefault("premium", {})
+    state.setdefault("boosts", {})
+    state.setdefault("custom_credits", {})
+    state.setdefault("shop_revenue", {"stars": 0, "sales": 0})
+    state.setdefault("sponsored_posts", [])
     state.setdefault("scheduled_posts", [])
     state.setdefault("giveaways", {})
     state.setdefault("users", {})
@@ -1376,13 +1384,16 @@ BOT_COMMANDS = [
     ("referral", "Invite friends, earn XP"),
     ("topreferrers", "Top inviters"),
     ("premium", "Premium with Telegram Stars"),
+    ("shop", "Stars shop: XP Boost, custom images, Premium"),
+    ("customquote", "Turn your words into a quote image"),
+    ("sponsor", "Post a sponsored message to the channel"),
+    ("analytics", "Bot analytics (owner only)"),
     ("broadcast", "Broadcast to all subscribers (owner)"),
     ("schedulepost", "Schedule a channel post (owner)"),
     ("scheduled", "List scheduled posts (owner)"),
     ("giveaway", "Start a giveaway in a group"),
     ("draw", "Draw the giveaway winner"),
     ("share", "Share Daily News with friends"),
-    ("boost", "Referral boost on/off/auto (owner)"),
     ("locks", "List locked message types"),
     ("tban", "Temporary ban, auto-unban"),
     ("id", "Show your ID or this group's ID"),
@@ -1390,9 +1401,6 @@ BOT_COMMANDS = [
     ("enable", "Re-enable a command"),
     ("approve", "Exempt a member from enforcement"),
     ("unapprove", "Remove an approval"),
-    ("antiraid", "Mute newcomers during a join flood"),
-    ("cleanservice", "Delete join/leave notices"),
-    ("antichannel", "Block messages sent as a channel"),
 ]
 
 
@@ -1690,8 +1698,14 @@ def xp_for_next_level(level):
 
 
 def xp_amount(state, uid, base):
-    """Premium members earn double XP."""
-    return base * 2 if str(uid) in state.get("premium", {}) else base
+    """Premium members earn double XP; an active XP Boost doubles it again (4x with both)."""
+    mult = 1
+    if str(uid) in state.get("premium", {}):
+        mult *= 2
+    boost = state.get("boosts", {}).get(str(uid))
+    if boost and int(time.time()) < boost.get("until", 0):
+        mult *= 2
+    return base * mult
 
 
 def award_xp(state, uid, name, amount):
@@ -2005,6 +2019,15 @@ def handle_update(update, state, dry_run=False):
             gid = int(data.split(":", 1)[1]) if data.split(":", 1)[1].lstrip("-").isdigit() else None
             rules = get_group_settings(state, gid).get("rules", "") if gid else ""
             actions.append({"type": "text", "chat_id": chat_id, "text": f"📜 Group rules:\n\n{rules}" if rules else "No rules set yet — admins can set them with /setrules."})
+        elif data.startswith("buy:"):
+            item = data.split(":", 1)[1]
+            uid = (cb.get("from") or {}).get("id")
+            if item == "boost":
+                actions.append({"type": "invoice", "chat_id": chat_id, "title": "XP Boost (24h)", "description": "Double XP for 24 hours in Daily News.", "payload": f"shop_boost_{uid}", "currency": "XTR", "prices": [{"label": "XP Boost", "amount": 50}], "keyboard": {"inline_keyboard": [[{"text": "⚡ Pay 50 Stars", "pay": True}]]}})
+            elif item == "custom":
+                actions.append({"type": "invoice", "chat_id": chat_id, "title": "Custom quote image", "description": "One custom quote image with your own words.", "payload": f"shop_custom_{uid}", "currency": "XTR", "prices": [{"label": "Custom image", "amount": 30}], "keyboard": {"inline_keyboard": [[{"text": "🎨 Pay 30 Stars", "pay": True}]]}})
+            elif item == "premium":
+                actions.append({"type": "invoice", "chat_id": chat_id, "title": "Daily News Premium", "description": "Lifetime Premium: double XP forever, a ⭐ badge, and early access to new features.", "payload": f"shop_premium_{uid}", "currency": "XTR", "prices": [{"label": "Premium", "amount": 150}], "keyboard": {"inline_keyboard": [[{"text": "⭐ Pay 150 Stars", "pay": True}]]}})
         elif data == "quote":
             actions.append({"type": "text", "chat_id": chat_id, "text": pick_quote("any")})
         elif data == "love":
@@ -2184,10 +2207,30 @@ def handle_update(update, state, dry_run=False):
         pay = message["successful_payment"]
         buyer = message.get("from") or {}
         buyer_id = buyer.get("id")
-        if pay.get("invoice_payload", "").startswith("premium_") and buyer_id:
+        payload = pay.get("invoice_payload", "")
+        if payload.startswith("premium_") and buyer_id:
             # Welcome bonus first (flat +50), then unlock Premium (double XP after).
             award_xp(state, buyer_id, buyer.get("first_name", "friend"), 50)
             state.setdefault("premium", {})[str(buyer_id)] = {"since": int(time.time()), "stars": pay.get("total_amount", 0)}
+            actions.append({"type": "text", "chat_id": chat_id, "text": "⭐ Welcome to Premium! Lifetime access unlocked: double XP, a ⭐ badge, and early access to new features. Thank you for supporting Daily News! (+50 XP)"})
+        elif payload.startswith("shop_boost_") and buyer_id:
+            state.setdefault("boosts", {})[str(buyer_id)] = {"until": int(time.time()) + 86400}
+            rev = state.setdefault("shop_revenue", {"stars": 0, "sales": 0})
+            rev["stars"] = rev.get("stars", 0) + pay.get("total_amount", 0)
+            rev["sales"] = rev.get("sales", 0) + 1
+            actions.append({"type": "text", "chat_id": chat_id, "text": "⚡ XP Boost activated! Double XP for the next 24 hours. Go earn some!"})
+        elif payload.startswith("shop_custom_") and buyer_id:
+            state.setdefault("custom_credits", {})[str(buyer_id)] = state.get("custom_credits", {}).get(str(buyer_id), 0) + 1
+            rev = state.setdefault("shop_revenue", {"stars": 0, "sales": 0})
+            rev["stars"] = rev.get("stars", 0) + pay.get("total_amount", 0)
+            rev["sales"] = rev.get("sales", 0) + 1
+            actions.append({"type": "text", "chat_id": chat_id, "text": "🎨 Custom quote image credit added! Send /customquote <your words> to turn them into a shareable image."})
+        elif payload.startswith("shop_premium_") and buyer_id:
+            award_xp(state, buyer_id, buyer.get("first_name", "friend"), 50)
+            state.setdefault("premium", {})[str(buyer_id)] = {"since": int(time.time()), "stars": pay.get("total_amount", 0)}
+            rev = state.setdefault("shop_revenue", {"stars": 0, "sales": 0})
+            rev["stars"] = rev.get("stars", 0) + pay.get("total_amount", 0)
+            rev["sales"] = rev.get("sales", 0) + 1
             actions.append({"type": "text", "chat_id": chat_id, "text": "⭐ Welcome to Premium! Lifetime access unlocked: double XP, a ⭐ badge, and early access to new features. Thank you for supporting Daily News! (+50 XP)"})
         return actions
 
@@ -3024,6 +3067,65 @@ def handle_update(update, state, dry_run=False):
         else:
             reply("⭐ Daily News Premium — 150 Stars, lifetime.\n\nPerks: double XP on everything, a ⭐ badge in /rank and /leaderboard, and early access to new features.\n\nTap below to pay with Telegram Stars.")
             actions.append({"type": "invoice", "chat_id": chat_id, "title": "Daily News Premium", "description": "Lifetime Premium: double XP, a ⭐ badge, and early access to new features.", "payload": f"premium_{sender_id}", "currency": "XTR", "prices": [{"label": "Premium", "amount": 150}], "keyboard": {"inline_keyboard": [[{"text": "⭐ Pay 150 Stars", "pay": True}]]}})
+    elif command == "/shop":
+        boost = state.get("boosts", {}).get(str(sender_id))
+        boost_on = bool(boost and int(time.time()) < boost.get("until", 0))
+        credits = state.get("custom_credits", {}).get(str(sender_id), 0)
+        reply(
+            "🛍️ Daily News Shop — pay with Telegram Stars\n\n"
+            "⚡ XP Boost — 50 Stars\n"
+            "   Double XP for 24 hours" + (" (active now!)" if boost_on else "") + "\n"
+            "🎨 Custom quote image — 30 Stars\n"
+            f"   One custom image with your own words (you have {credits} credit(s))\n"
+            "⭐ Premium, lifetime — 150 Stars\n"
+            "   Double XP forever + ⭐ badge\n\n"
+            "Tap a button to buy:"
+        )
+        actions.append({"type": "text", "chat_id": chat_id, "text": "Choose an item:", "keyboard": {"inline_keyboard": [[{"text": "⚡ XP Boost — 50 ⭐", "callback_data": "buy:boost"}], [{"text": "🎨 Custom image — 30 ⭐", "callback_data": "buy:custom"}], [{"text": "⭐ Premium — 150 ⭐", "callback_data": "buy:premium"}]]}})
+    elif command == "/customquote":
+        credits = state.get("custom_credits", {}).get(str(sender_id), 0)
+        if not args.strip():
+            reply(f"Send /customquote <your words> to turn them into a shareable quote image. You have {credits} credit(s) — buy more in /shop (30 Stars each).")
+        elif credits <= 0:
+            reply("You have no custom image credits. Buy one in /shop — 30 Stars each.")
+        else:
+            state.setdefault("custom_credits", {})[str(sender_id)] = credits - 1
+            actions.append({"type": "photo", "chat_id": chat_id, "quote": args.strip(), "caption": "Made with @MuseVishnu_bot"})
+    elif command == "/sponsor":
+        if sender_id != OWNER_ID:
+            reply("Only the owner can post sponsored messages.")
+        elif not args.strip():
+            reply("Send /sponsor <message> to post a sponsored message to the channel.")
+        elif not state.get("channel_id"):
+            reply("No channel is set yet.")
+        else:
+            state.setdefault("sponsored_posts", []).append({"text": args.strip(), "at": int(time.time()), "by": sender_id})
+            actions.append({"type": "text", "chat_id": state.get("channel_id"), "text": f"📣 Sponsored\n\n{args.strip()}"})
+            reply("Sponsored post sent to the channel.")
+    elif command == "/analytics":
+        if sender_id != OWNER_ID:
+            reply("Only the owner can see analytics.")
+        else:
+            stats = state.get("stats", {})
+            cmds = stats.get("commands", {})
+            top_cmds = sorted(cmds.items(), key=lambda kv: -kv[1])[:5]
+            rev = state.get("shop_revenue", {})
+            top_lines = "\n".join(f"{c}: {n}" for c, n in top_cmds) if top_cmds else "(none yet)"
+            reply(
+                "📊 Daily News Analytics\n\n"
+                f"👥 Users: {len(state.get('users', {}))}\n"
+                f"💬 Messages: {stats.get('messages', 0)}\n"
+                f"💬 Quotes sent: {stats.get('quotes_sent', 0)}\n"
+                f"🖼️ Quote images: {stats.get('photos_sent', 0)}\n"
+                f"🎯 Quizzes: {stats.get('quizzes_sent', 0)}\n"
+                f"⭐ Premium: {len(state.get('premium', {}))}\n"
+                f"📬 Subscribers: {len(state.get('subscribers', []))}\n"
+                f"⭐ XP players: {len(state.get('xp', {}))}\n"
+                f"🔗 Referrals: {sum(r.get('count', 0) for r in state.get('referrals', {}).values())}\n"
+                f"🛍️ Shop: {rev.get('sales', 0)} sales, {rev.get('stars', 0)} Stars\n"
+                f"📣 Sponsored posts: {len(state.get('sponsored_posts', []))}\n\n"
+                f"Top commands:\n{top_lines}"
+            )
     elif command == "/broadcast":
         if sender_id != OWNER_ID:
             reply("Only the owner can broadcast.")
@@ -4406,6 +4508,50 @@ def run_tests():
     a = handle_update({"update_id": 923, "poll_answer": {"poll_id": "pollkh2", "user": {"id": 777, "first_name": "Player"}, "option_ids": [1]}}, state, dry_run=True)
     check9("Khmer quiz wrong answer replies in Khmer", any("មិនទាន់ត្រឹមត្រូវ" in t for t in texts(a)))
     print(f"phase 9 checks: {len(fails)} failures")
+    if fails:
+        print("FAILED: " + "; ".join(fails))
+        return 1
+
+    # Phase 10 (Phase 9 Pro & money) tests.
+    fails = []
+    def check10(label, cond):
+        print(("PASS " if cond else "FAIL ") + label)
+        if not cond:
+            fails.append(label)
+    # /shop shows the catalog with buy buttons.
+    a = handle_update({"update_id": 931, "message": {"chat": dm, "from": player, "text": "/shop"}}, state, dry_run=True)
+    check10("shop shows the catalog", any("XP Boost" in t and "Custom quote image" in t for t in texts(a)))
+    check10("shop has buy buttons", any(x.get("type") == "text" and x.get("keyboard") and "buy:boost" in str(x.get("keyboard")) for x in a))
+    # buy:boost tap sends a 50-Star invoice.
+    a = handle_update({"update_id": 932, "callback_query": {"id": "cb10", "from": player, "data": "buy:boost", "message": {"chat": dm, "message_id": 80}}}, state, dry_run=True)
+    check10("buy boost sends a 50-Star invoice", any(x.get("type") == "invoice" and x.get("payload", "").startswith("shop_boost_") and x.get("prices", [{}])[0].get("amount") == 50 for x in a))
+    # Paying for a boost activates it and records revenue.
+    a = handle_update({"update_id": 933, "message": {"chat": dm, "from": player, "successful_payment": {"invoice_payload": "shop_boost_777", "total_amount": 50, "currency": "XTR"}}}, state, dry_run=True)
+    check10("boost payment activates the boost", int(time.time()) < state.get("boosts", {}).get("777", {}).get("until", 0))
+    check10("boost payment records revenue", state.get("shop_revenue", {}).get("stars") == 50 and state.get("shop_revenue", {}).get("sales") == 1)
+    check10("boost stacks with Premium (4x)", xp_amount(state, 777, 10) == 40)
+    # Paying for a custom image grants a credit.
+    a = handle_update({"update_id": 934, "message": {"chat": dm, "from": player, "successful_payment": {"invoice_payload": "shop_custom_777", "total_amount": 30, "currency": "XTR"}}}, state, dry_run=True)
+    check10("custom payment grants a credit", state.get("custom_credits", {}).get("777") == 1)
+    # /customquote without a credit is refused; with one it makes an image and spends it.
+    a = handle_update({"update_id": 935, "message": {"chat": dm, "from": {"id": 999, "first_name": "Rookie"}, "text": "/customquote Be kind."}}, state, dry_run=True)
+    check10("customquote without credit is refused", any("no custom image credits" in t for t in texts(a)))
+    a = handle_update({"update_id": 936, "message": {"chat": dm, "from": player, "text": "/customquote Be kind."}}, state, dry_run=True)
+    check10("customquote makes an image", any(x.get("type") == "photo" and x.get("quote") == "Be kind." for x in a))
+    check10("customquote spends the credit", state.get("custom_credits", {}).get("777") == 0)
+    # /sponsor is owner-only and posts to the channel.
+    a = handle_update({"update_id": 937, "message": {"chat": dm, "from": player, "text": "/sponsor Try our sponsor!"}}, state, dry_run=True)
+    check10("sponsor refused for non-owner", any("Only the owner" in t for t in texts(a)))
+    owner_user = {"id": 5039926430, "first_name": "Owner"}
+    a = handle_update({"update_id": 938, "message": {"chat": dm, "from": owner_user, "text": "/sponsor Try our sponsor!"}}, state, dry_run=True)
+    check10("sponsor posts to the channel", any(x.get("type") == "text" and x.get("chat_id") == state.get("channel_id") and "Sponsored" in x.get("text", "") for x in a))
+    check10("sponsor is recorded", len(state.get("sponsored_posts", [])) == 1)
+    # /analytics is owner-only and shows the counters.
+    a = handle_update({"update_id": 939, "message": {"chat": dm, "from": player, "text": "/analytics"}}, state, dry_run=True)
+    check10("analytics refused for non-owner", any("Only the owner" in t for t in texts(a)))
+    a = handle_update({"update_id": 940, "message": {"chat": dm, "from": owner_user, "text": "/analytics"}}, state, dry_run=True)
+    check10("analytics shows shop sales", any("Shop:" in t and "80 Stars" in t for t in texts(a)))
+    print(f"phase 10 checks: {len(fails)} failures")
     if fails:
         print("FAILED: " + "; ".join(fails))
         return 1
