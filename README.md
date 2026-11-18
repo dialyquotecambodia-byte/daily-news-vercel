@@ -209,6 +209,34 @@ The harnesses monkeypatch the bot's Telegram calls, use a temp `state.json`
 vendored fonts. To try the KV backend locally, set `STATE_BACKEND=kv` plus
 `KV_REST_API_URL` / `KV_REST_API_TOKEN` in a local `.env` (never committed).
 
+## Phase 1 — Rose-style group power (2026-11-18)
+
+- **Federation:** `/newfed`, `/joinfed`, `/leavefed`, `/fedinfo`, `/fedlist`,
+  `/fedbans`, `/fban`, `/unfban`. A fed ban bans a user in every group of the
+  federation at once, and a federally banned user is banned again if they
+  join any fed group. Fed state lives in KV under `federations`.
+- **Notes & filters:** `/save`, `/get`, `/clear`, `/notes` (also `#name` in
+  chat), `/filter`, `/filters`, `/stop`. `{name}` is replaced with the
+  sender's first name.
+- **Captcha:** `/captcha on` mutes new members until they tap the
+  "I'm human" button (callback `verify:<gid>:<uid>`); only the member
+  themself can tap it. Pending verifications live in `pending_verify`.
+- **Reports:** `/report` (reply to a message) forwards the report to every
+  group admin's DM. Toggle with `/settings` or `reports` in group settings.
+- **Blacklists:** `/addblacklist`, `/rmblacklist`, `/blacklist`,
+  `/blacklistmode delete|warn|mute`; `/addsticker`, `/rmsticker`, `/stickers`
+  (reply to a sticker). Enforced on non-admin messages and stickers.
+- **Settings panel:** `/settings` sends an inline-button panel
+  (`set:<gid>:<key>` callbacks) for anti-link, anti-spam, captcha, reports
+  and blacklist mode; the panel edits itself in place.
+- **Connect:** `/connect @Group` / `/disconnect` lets a group admin run admin
+  commands (including `/ban`, `/warn`, `/settings`, `/fban`) from a private
+  chat. Connections live in KV under `connections`.
+- **Promote/demote/purge:** `/promote`, `/demote` (via `promoteChatMember`),
+  `/purge` (reply to a message, deletes up to 50 messages).
+- Command menu is now 68 commands. Dry-run suite: 54 original fake updates
+  + 35 Phase 1 checks, all passing (`python3 bot/superbot.py --test`).
+
 ## Free-tier limits that matter
 
 - **Vercel Hobby functions:** default max 10s per invocation; `vercel.json`
