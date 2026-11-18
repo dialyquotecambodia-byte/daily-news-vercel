@@ -260,6 +260,28 @@ vendored fonts. To try the KV backend locally, set `STATE_BACKEND=kv` plus
 - Command menu is now 74 commands. Dry-run suite: 54 original + 35 Phase 1
   + 20 Phase 2 checks, all passing (`python3 bot/superbot.py --test`).
 
+## Phase 3 — Smart & safe: real AI chat, AI moderation, logs, backup (2026-11-18)
+
+- **Real AI chat:** `/ask` and plain "what is …?" questions now ask a real
+  AI model when the local brain doesn't know the answer. No key needed: it
+  uses the free Pollinations text API. If `OPENAI_API_KEY` is set in Vercel
+  (with optional `OPENAI_BASE_URL` / `OPENAI_MODEL`), it uses that
+  OpenAI-compatible API instead. Failures fall back to the local brain.
+- **AI moderation:** `/check` (reply to a message) asks the AI for a
+  spam/scam/abuse/harmless verdict. `/aimod on` (off by default) makes the
+  bot check link messages from non-admins and delete spam, scams and abuse.
+  Fail-open: if the AI check fails, the message is allowed.
+- **Log channel:** `/setlog @Channel` (or an id) logs bans, unban, kicks,
+  mutes, 3-warning mutes, fbans, unfbans, purges, promotes and demotes, plus
+  AI-moderation deletions. `/setlog off` clears it. The bot must be an admin
+  in the log channel to post.
+- **Backup/restore:** `/backup` sends the group settings as JSON (chunked
+  under Telegram's message limit); `/restore <json>` brings them back into
+  any group. Only known setting keys are restored.
+- Command menu is now 79 commands. Dry-run suite: 54 original + 35 Phase 1
+  + 20 Phase 2 + 15 Phase 3 checks, all passing
+  (`python3 bot/superbot.py --test`).
+
 ## Free-tier limits that matter
 
 - **Vercel Hobby functions:** default max 10s per invocation; `vercel.json`
