@@ -123,25 +123,27 @@ def cron_morning():
     if not cron_authorized(request.headers):
         return {"ok": False, "error": "unauthorized"}, 401
     try:
+        reminders = sb.send_reminders()
         daily = sb.send_daily()
         story = sb.send_story()
         scheduled = sb.send_scheduled()
     except Exception as e:
         print(f"cron-morning error: {e}", flush=True)
         return {"ok": False, "error": str(e)}, 500
-    return {"ok": True, "daily_sent": daily, "story_sent": story, "scheduled_sent": scheduled}, 200
+    return {"ok": True, "reminders_sent": reminders, "daily_sent": daily, "story_sent": story, "scheduled_sent": scheduled}, 200
 
 
 def cron_evening():
     if not cron_authorized(request.headers):
         return {"ok": False, "error": "unauthorized"}, 401
     try:
+        reminders = sb.send_reminders()
         sent = sb.send_evening()
         scheduled = sb.send_scheduled()
     except Exception as e:
         print(f"cron-evening error: {e}", flush=True)
         return {"ok": False, "error": str(e)}, 500
-    return {"ok": True, "evening_sent": sent, "scheduled_sent": scheduled}, 200
+    return {"ok": True, "reminders_sent": reminders, "evening_sent": sent, "scheduled_sent": scheduled}, 200
 
 
 def post_news_get():

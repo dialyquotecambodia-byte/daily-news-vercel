@@ -447,6 +447,7 @@ HELP_TEXT = (
     "Levels & fun\n"
     "/checkin — daily check-in, +20 XP and keep your streak alive\n"
     "/rank — your XP, level and streak\n"
+    "/achievements — your badges and how to unlock them\n"
     "/leaderboard — top players and longest streaks\n"
     "/tournament — 5-question trivia tournament in a group, winner +50 XP\n"
     "/digest — your personal daily digest\n\n"
@@ -576,6 +577,7 @@ HELP_TEXT_KH_2 = (
     "កម្រិត និងភាពសប្បាយ\n"
     "/checkin — check-in ប្រចាំថ្ងៃ, +20 XP និងរក្សា streak របស់អ្នក\n"
     "/rank — XP, កម្រិត និង streak របស់អ្នក\n"
+    "/achievements — សមិទ្ធផលរបស់អ្នក និងរបៀបដោះសោវា\n"
     "/leaderboard — អ្នកលេងល្អជាងគេ និង streak វែងជាងគេ\n"
     "/tournament — ការប្រកួតសំណួរ 5 សំណួរក្នុងក្រុម, អ្នកឈ្នះ +50 XP\n"
     "/digest — សង្ខេបប្រចាំថ្ងៃផ្ទាល់ខ្លួនរបស់អ្នក\n\n"
@@ -819,6 +821,10 @@ def load_state():
     state.setdefault("sponsored_posts", [])
     state.setdefault("afk", {})
     state.setdefault("ai_history", {})
+    state.setdefault("flood_tracker", {})
+    state.setdefault("recent_quotes", [])
+    state.setdefault("achievements", {})
+    state.setdefault("tournament_wins", {})
     state.setdefault("scheduled_posts", [])
     state.setdefault("giveaways", {})
     state.setdefault("users", {})
@@ -1062,7 +1068,6 @@ def target_user(message, args):
 
 
 # Flood tracking, in memory only: (chat_id, user_id) -> [timestamps]
-FLOOD_TRACKER = {}
 
 
 def save_state(state):
@@ -1169,11 +1174,16 @@ def pick_quote(kind="any", state=None):
         pool = list(DAILY_QUOTES)
     if state:
         pool.extend(state.get("custom_quotes", []))
-    # No repeats: avoid the last 5 quotes sent in this process
-    fresh = [q for q in pool if q not in _RECENT_QUOTES]
+    # No repeats: avoid the last 5 quotes sent. Kept in state (not a module
+    # list) so it survives Vercel's per-invocation process.
+    recent = state.get("recent_quotes", []) if state else _RECENT_QUOTES
+    fresh = [q for q in pool if q not in recent]
     chosen = random.choice(fresh if fresh else pool)
-    _RECENT_QUOTES.append(chosen)
-    del _RECENT_QUOTES[:-5]
+    if state is not None:
+        state["recent_quotes"] = (recent + [chosen])[-5:]
+    else:
+        _RECENT_QUOTES.append(chosen)
+        del _RECENT_QUOTES[:-5]
     return chosen
 
 
@@ -1559,7 +1569,6 @@ BOT_COMMANDS = [
     ("slots", "Spin the slot machine"),
     ("scramble", "Unscramble the word"),
     ("poll", "Make a poll"),
-    ("score", "Quiz scores"),
     ("ask", "Ask me a question"),
     ("aiquiz", "A fresh AI quiz question"),
     ("afk", "Set yourself away from keyboard"),
@@ -1597,6 +1606,7 @@ BOT_COMMANDS = [
     ("purge", "Delete messages in bulk"),
     ("checkin", "Daily check-in +20 XP"),
     ("rank", "Your XP, level and streak"),
+    ("achievements", "Your badges and how to unlock them"),
     ("leaderboard", "Top players"),
     ("tournament", "Start a trivia tournament"),
     ("endtournament", "End the tournament"),
@@ -1952,6 +1962,58 @@ def xp_amount(state, uid, base):
     return base * mult
 
 
+# Achievements (badges). check_achievements() awards any badge the user has
+# just earned and returns the new badge ids; handle_update announces them.
+ACHIEVEMENTS = {
+    "first_quote": {"icon": "💬", "name_en": "First Quote", "name_kh": "សម្រង់ដំបូង", "desc_en": "Ask for your first quote", "desc_kh": "ស្នើសុំសម្រង់ដំបូងរបស់អ្នក"},
+    "first_quiz": {"icon": "🎯", "name_en": "Quiz Rookie", "name_kh": "អ្នកលេងសំណួរថ្មី", "desc_en": "Play your first quiz", "desc_kh": "លេងសំណួរលើកដំបូងរបស់អ្នក"},
+    "quiz_10": {"icon": "🏆", "name_en": "Quiz Master", "name_kh": "ម្ចាស់សំណួរ", "desc_en": "Answer 10 quiz questions correctly", "desc_kh": "ឆ្លើយសំណួរ 10 សំណួរឱ្យត្រូវ"},
+    "streak_7": {"icon": "🔥", "name_en": "Week Streak", "name_kh": "Streak 7 ថ្ងៃ", "desc_en": "Check in 7 days in a row", "desc_kh": "Check-in 7 ថ្ងៃជាប់គ្នា"},
+    "streak_30": {"icon": "🔥", "name_en": "Month Streak", "name_kh": "Streak 30 ថ្ងៃ", "desc_en": "Check in 30 days in a row", "desc_kh": "Check-in 30 ថ្ងៃជាប់គ្នា"},
+    "level_5": {"icon": "⭐", "name_en": "Level 5", "name_kh": "កម្រិត 5", "desc_en": "Reach Level 5", "desc_kh": "ឡើងដល់កម្រិត 5"},
+    "level_10": {"icon": "⭐", "name_en": "Level 10", "name_kh": "កម្រិត 10", "desc_en": "Reach Level 10", "desc_kh": "ឡើងដល់កម្រិត 10"},
+    "chatter_100": {"icon": "💬", "name_en": "Chatterbox", "name_kh": "អ្នកជជែក", "desc_en": "Send 100 messages", "desc_kh": "ផ្ញើសារ 100 សារ"},
+    "referrer_1": {"icon": "🔗", "name_en": "First Invite", "name_kh": "អញ្ជើញដំបូង", "desc_en": "Invite your first friend", "desc_kh": "អញ្ជើញមិត្តភក្តិដំបូងរបស់អ្នក"},
+    "referrer_5": {"icon": "🔗", "name_en": "Super Inviter", "name_kh": "អ្នកអញ្ជើញដ៏អស្ចារ្យ", "desc_en": "Invite 5 friends", "desc_kh": "អញ្ជើញមិត្តភក្តិ 5 នាក់"},
+    "tournament_win": {"icon": "🏆", "name_en": "Tournament Champion", "name_kh": "ជើងឯកប្រកួត", "desc_en": "Win a tournament", "desc_kh": "ឈ្នះការប្រកួត"},
+    "premium": {"icon": "⭐", "name_en": "Premium", "name_kh": "Premium", "desc_en": "Become a Premium member", "desc_kh": "ក្លាយជាសមាជិក Premium"},
+}
+
+
+def check_achievements(state, uid):
+    """Award any badges the user has just earned; return the new badge ids."""
+    if not uid:
+        return []
+    uid = str(uid)
+    earned = state.setdefault("achievements", {}).setdefault(uid, [])
+    new = []
+    user = state.get("users", {}).get(uid, {})
+    xp_rec = state.get("xp", {}).get(uid, {})
+    level = xp_level(xp_rec.get("xp", 0))
+    streak = state.get("streaks", {}).get(uid, {}).get("count", 0)
+    score = state.get("scores", {}).get(uid, {})
+    ref = state.get("referrals", {}).get(uid, {})
+
+    def _grant(bid, cond):
+        if cond and bid not in earned:
+            earned.append(bid)
+            new.append(bid)
+
+    _grant("first_quote", user.get("quotes", 0) >= 1)
+    _grant("first_quiz", user.get("quizzes", 0) >= 1 or score.get("total", 0) >= 1)
+    _grant("quiz_10", score.get("correct", 0) >= 10)
+    _grant("streak_7", streak >= 7)
+    _grant("streak_30", streak >= 30)
+    _grant("level_5", level >= 5)
+    _grant("level_10", level >= 10)
+    _grant("chatter_100", user.get("messages", 0) >= 100)
+    _grant("referrer_1", ref.get("count", 0) >= 1)
+    _grant("referrer_5", ref.get("count", 0) >= 5)
+    _grant("tournament_win", state.get("tournament_wins", {}).get(uid, 0) >= 1)
+    _grant("premium", uid in state.get("premium", {}))
+    return new
+
+
 def award_xp(state, uid, name, amount):
     """Add XP (doubled for Premium members); return the new level if the user just levelled up, else None."""
     if not uid:
@@ -2019,16 +2081,21 @@ def rank_text(state, uid, name, lang="en"):
     rank = next((i + 1 for i, (k, _v) in enumerate(ranked) if k == str(uid)), len(ranked))
     streak = state.get("streaks", {}).get(str(uid), {"count": 0})
     premium = " ⭐ Premium" if str(uid) in state.get("premium", {}) else ""
+    badges = state.get("achievements", {}).get(str(uid), [])
+    badge_line = ""
+    if badges:
+        icons = " ".join(ACHIEVEMENTS[b]["icon"] for b in badges if b in ACHIEVEMENTS)
+        badge_line = f"\n🏅 {icons}"
     if lang == "kh":
         return (
-            f"🏆 ចំណាត់ថ្នាក់របស់ {name}{premium}\n\n"
+            f"🏆 ចំណាត់ថ្នាក់របស់ {name}{premium}{badge_line}\n\n"
             f"⭐ កម្រិត {level} — {xp} XP\n"
             f"កម្រិតបន្ទាប់៖ ត្រូវការ {nxt - xp} XP ទៀត (កម្រិត {level + 1} នៅ {nxt} XP)\n"
             f"ចំណាត់ថ្នាក់សកល៖ លេខ #{rank} ក្នុងចំណោម {len(ranked)}\n"
             f"🔥 Daily streak: {streak.get('count', 0)} ថ្ងៃ — /checkin ជារៀងរាល់ថ្ងៃដើម្បីរក្សាវា"
         )
     return (
-        f"🏆 {name}'s rank{premium}\n\n"
+        f"🏆 {name}'s rank{premium}{badge_line}\n\n"
         f"⭐ Level {level} — {xp} XP\n"
         f"Next level: {nxt - xp} XP to go (Level {level + 1} at {nxt} XP)\n"
         f"Global rank: #{rank} of {len(ranked)}\n"
@@ -2141,6 +2208,15 @@ def check_scheduled_posts(state):
     return actions
 
 
+def send_reminders():
+    """Deliver due reminders. Called from the Vercel crons so reminders fire
+    at 08:42/18:42 even when nobody messages the bot in between."""
+    state = load_state()
+    before = len(state.get("reminders", []))
+    check_reminders(state)
+    return before - len(state.get("reminders", []))
+
+
 def send_scheduled():
     """Send any due scheduled channel posts. Returns the number sent."""
     state = load_state()
@@ -2246,6 +2322,7 @@ def handle_update(update, state, dry_run=False):
                         winner_uid = max(t["players"], key=lambda k: t["players"][k]["score"])
                         winner = t["players"][winner_uid]
                         award_xp(state, winner_uid, winner["name"], 50)
+                        state.setdefault("tournament_wins", {})[str(winner_uid)] = state.get("tournament_wins", {}).get(str(winner_uid), 0) + 1
                         actions.append({"type": "text", "chat_id": tchat, "text": f"🏆 Tournament over!\n\n{tournament_standings(t)}\n\nWinner: {winner['name']} — +{xp_amount(state, winner_uid, 50)} XP!"})
                         for pid in list(t.get("done_polls", [])):
                             state.get("tournament_polls", {}).pop(pid, None)
@@ -2304,11 +2381,11 @@ def handle_update(update, state, dry_run=False):
             elif item == "premium":
                 actions.append({"type": "invoice", "chat_id": chat_id, "title": "Daily News Premium", "description": "Lifetime Premium: double XP forever, a ⭐ badge, and early access to new features.", "payload": f"shop_premium_{uid}", "currency": "XTR", "prices": [{"label": "Premium", "amount": 150}], "keyboard": {"inline_keyboard": [[{"text": "⭐ Pay 150 Stars", "pay": True}]]}})
         elif data == "quote":
-            actions.append({"type": "text", "chat_id": chat_id, "text": pick_quote("any")})
+            actions.append({"type": "text", "chat_id": chat_id, "text": pick_quote("any", state)})
         elif data == "love":
-            actions.append({"type": "text", "chat_id": chat_id, "text": pick_quote("love")})
+            actions.append({"type": "text", "chat_id": chat_id, "text": pick_quote("love", state)})
         elif data == "quoteimg":
-            _q = pick_quote("any")
+            _q = pick_quote("any", state)
             actions.append({"type": "photo", "chat_id": chat_id, "quote": _q, "caption": channel_caption(_q, "daily")})
         elif data == "about":
             actions.append({"type": "text", "chat_id": chat_id, "text": ABOUT_TEXT})
@@ -2536,12 +2613,17 @@ def handle_update(update, state, dry_run=False):
             return actions
         if not admin and settings.get("antispam"):
             now_ts = int(time.time())
-            key = (chat_id, sender_id)
-            times = [t for t in FLOOD_TRACKER.get(key, []) if now_ts - t < 10]
+            key = f"{chat_id}:{sender_id}"
+            # Flood history lives in state (not a module dict) so it survives
+            # Vercel's per-invocation process — this is what makes the mute work.
+            tracker = state.setdefault("flood_tracker", {})
+            for k in [k for k, v in tracker.items() if not v or max(v) < now_ts - 10]:
+                del tracker[k]
+            times = [t for t in tracker.get(key, []) if now_ts - t < 10]
             times.append(now_ts)
-            FLOOD_TRACKER[key] = times
+            tracker[key] = times
             if len(times) > settings.get("flood_limit", 5):
-                FLOOD_TRACKER[key] = []
+                tracker[key] = []
                 until = now_ts + 300
                 actions.append({"type": "restrict", "chat_id": chat_id, "user_id": sender_id, "until": until, "permissions": {"can_send_messages": False}})
                 actions.append({"type": "text", "chat_id": chat_id, "text": f"{sender.get('first_name', 'friend')} was muted for 5 minutes for flooding."})
@@ -3224,6 +3306,16 @@ def handle_update(update, state, dry_run=False):
             reply(msg)
     elif command == "/rank":
         reply(rank_text(state, sender_id, sender.get("first_name", "friend"), user_lang(state, sender_id)))
+    elif command == "/achievements":
+        earned = state.get("achievements", {}).get(str(sender_id), [])
+        lang = user_lang(state, sender_id)
+        lines = [f"🏅 {'សមិទ្ធផលរបស់អ្នក' if lang == 'kh' else 'Your achievements'} ({len(earned)}/{len(ACHIEVEMENTS)})\n"]
+        for bid, b in ACHIEVEMENTS.items():
+            name = b["name_kh"] if lang == "kh" else b["name_en"]
+            desc = b["desc_kh"] if lang == "kh" else b["desc_en"]
+            mark = "✅" if bid in earned else "🔒"
+            lines.append(f"{mark} {b['icon']} {name} — {desc}")
+        reply("\n".join(lines))
     elif command == "/leaderboard":
         reply(leaderboard_text(state, user_lang(state, sender_id)))
     elif command == "/tournament":
@@ -3954,6 +4046,13 @@ def handle_update(update, state, dry_run=False):
             reply(tr(state, sender_id, "thanks"))
     if msg_leveled:
         actions.append({"type": "text", "chat_id": chat_id, "text": f"🎉 LEVEL UP! You are now Level {msg_leveled}! Keep chatting and playing to earn more XP."})
+    # Achievements: announce any badges the user just unlocked.
+    for _bid in check_achievements(state, sender_id):
+        _b = ACHIEVEMENTS[_bid]
+        _lang = user_lang(state, sender_id)
+        _name = _b["name_kh"] if _lang == "kh" else _b["name_en"]
+        _desc = _b["desc_kh"] if _lang == "kh" else _b["desc_en"]
+        actions.append({"type": "text", "chat_id": chat_id, "text": f"🏅 {'សមិទ្ធផលថ្មី!' if _lang == 'kh' else 'Achievement unlocked!'} {_b['icon']} {_name} — {_desc}"})
     # Auto-delete command messages in groups when autodel is on (non-admin commands only).
     if chat_type in ("group", "supergroup") and text.startswith("/") and get_group_settings(state, chat_id).get("autodel") and not is_admin(chat_id, sender_id, dry_run=dry_run, sender_chat_id=_schat):
         actions.append({"type": "delete", "chat_id": chat_id, "message_id": message.get("message_id")})
@@ -4993,6 +5092,60 @@ def run_tests():
     a = handle_update({"update_id": 981, "message": {"chat": dm, "from": player, "text": "/help"}}, state, dry_run=True)
     check12("help answers in English again", any("Welcome to Daily News" in t for t in texts(a)))
     print(f"phase 12 checks: {len(fails)} failures")
+    if fails:
+        print("FAILED: " + "; ".join(fails))
+        return 1
+
+    # Phase 13 (Next Build & Fix: flood tracker + reminders + no-repeat in state, Achievements) tests.
+    fails = []
+    def check13(label, cond):
+        print(("PASS " if cond else "FAIL ") + label)
+        if not cond:
+            fails.append(label)
+    # Fix 1: flood history now lives in state, so a flood mutes across calls.
+    # (The test group's flood limit is 8 from an earlier test, so send 9.)
+    for i in range(9):
+        a = handle_update({"update_id": 991 + i, "message": {"chat": group, "from": {"id": 444, "first_name": "Flooder"}, "text": "flood test message"}}, state, dry_run=True)
+    check13("flood mutes after 9 rapid messages", any(x.get("type") == "restrict" for x in a))
+    check13("flood history is stored in state", "-100123:444" in state.get("flood_tracker", {}))
+    # Fix 2: quote no-repeat lives in state.
+    seen = [pick_quote("any", state) for _ in range(5)]
+    check13("5 quotes in a row are all different", len(set(seen)) == 5)
+    check13("recent quotes are stored in state", len(state.get("recent_quotes", [])) == 5)
+    # Fix 3: due reminders are delivered (send_message and save_state faked here).
+    _real_send = send_message
+    _real_save = save_state
+    _sent = []
+    def _fake_send(chat_id, text, **kw):
+        _sent.append((chat_id, text))
+        return True
+    globals()["send_message"] = _fake_send
+    globals()["save_state"] = lambda s: None
+    try:
+        state.setdefault("reminders", []).append({"chat_id": 777, "text": "test reminder xyz", "due": int(time.time()) - 10})
+        check_reminders(state)
+        check13("due reminder is sent", any("test reminder xyz" in t for _, t in _sent))
+        check13("due reminder is removed from the queue", not any(r.get("text") == "test reminder xyz" for r in state.get("reminders", [])))
+    finally:
+        globals()["send_message"] = _real_send
+        globals()["save_state"] = _real_save
+    # Achievements: first quote badge is awarded and announced.
+    a = handle_update({"update_id": 997, "message": {"chat": dm, "from": player, "text": "/quote"}}, state, dry_run=True)
+    check13("first quote badge awarded", "first_quote" in state.get("achievements", {}).get("777", []))
+    check13("badge unlock is announced", any("Achievement unlocked" in t and "First Quote" in t for t in texts(a)))
+    # Level and streak badges via check_achievements.
+    state.setdefault("xp", {})["777"] = {"xp": 800, "name": "Player", "last_msg": 0}
+    state.setdefault("streaks", {})["777"] = {"count": 7, "last": "", "name": "Player"}
+    new = check_achievements(state, 777)
+    check13("level 5 badge awarded at 800 XP", "level_5" in new)
+    check13("7-day streak badge awarded", "streak_7" in new)
+    check13("badges are not awarded twice", check_achievements(state, 777) == [])
+    # /achievements lists all 12 badges; /rank shows the badge icons.
+    a = handle_update({"update_id": 998, "message": {"chat": dm, "from": player, "text": "/achievements"}}, state, dry_run=True)
+    check13("achievements lists all badges", any("12" in t and "First Quote" in t for t in texts(a)))
+    a = handle_update({"update_id": 999, "message": {"chat": dm, "from": player, "text": "/rank"}}, state, dry_run=True)
+    check13("rank shows badge icons", any("🏅" in t for t in texts(a)))
+    print(f"phase 13 checks: {len(fails)} failures")
     if fails:
         print("FAILED: " + "; ".join(fails))
         return 1
