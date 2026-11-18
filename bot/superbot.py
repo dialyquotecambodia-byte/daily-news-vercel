@@ -272,6 +272,87 @@ RPS_EMOJI = {"rock": "🪨 Rock", "paper": "📄 Paper", "scissors": "✂️ Sci
 BRAND = "Daily Quote"
 CHANNEL_HANDLE = "@dailynewsreporter"
 
+# Bilingual interface (English / Khmer). user_lang() reads the per-user
+# "lang" ("en" or "kh", default "en"); t() returns the string for that
+# user's language, with {placeholders} filled from kwargs.
+def user_lang(state, uid):
+    return (state.get("users", {}).get(str(uid), {}) or {}).get("lang", "en")
+
+
+def tr(state, uid, key, **kwargs):
+    lang = user_lang(state, uid)
+    text = I18N.get(lang, I18N["en"]).get(key, I18N["en"].get(key, key))
+    return text.format(**kwargs) if kwargs else text
+
+
+I18N = {
+    "en": {
+        "welcome": "Hi {name}, welcome to Daily News.",
+        "language_prompt": "Choose your language:",
+        "language_set_en": "Language set to English. 🇬🇧",
+        "language_set_kh": "បានកំណត់ភាសាខ្មែរ។ 🇰🇭",
+        "menu_shown": "Here's your menu 👇 Tap a button any time — it stays under the message box.",
+        "menu_hidden": "Menu hidden. Send /menu any time to bring it back.",
+        "thanks": "Thanks for your message! Send /quote for a quote, /quoteimg for a picture, /quiz for a game, /ask to ask me something, or /help to see everything I can do.",
+        "thanks_known": "Thanks, {name}! You have sent me {n} messages now. Send /quote for a quote, /quiz for a game, /ask to ask me something, or /help to see everything.",
+        "unknown_command": "I don't know that command yet. Try /help to see what I can do.",
+        "admin_only": "Only group admins can use that command.",
+        "admin_group_only": "Admin commands only work in a group. Add me to a group and make me an admin, or connect to one with /connect.",
+        "owner_only": "Only the owner can do that.",
+        "checkin_done": "Already checked in today! Your streak is {n} day(s). Come back tomorrow. 🔥",
+        "checkin_new": "✅ Checked in! +{xp} XP\n🔥 Streak: {n} day(s) — keep it alive tomorrow!",
+        "no_xp": "No XP yet. Chat, play games and answer quizzes to earn XP! /checkin gives +20 XP every day.",
+        "leaderboard_title": "🏆 XP Leaderboard",
+        "streaks_title": "🔥 Longest streaks:",
+        "level_line": "⭐ Level {level} — {xp} XP",
+        "next_level": "Next level: {left} XP to go (Level {n} at {at} XP)",
+        "global_rank": "Global rank: #{rank} of {total}",
+        "streak_line": "🔥 Daily streak: {n} day(s) — /checkin every day to keep it alive",
+        "mystats_title": "Your stats, {name}:",
+        "mystats_messages": "Messages: {n}",
+        "mystats_quotes": "Quotes you asked for: {n}",
+        "mystats_quizzes": "Quizzes played: {n}",
+        "mystats_score": "Quiz score: {a}/{b}",
+        "mystats_streak": "🔥 Streak: {n} day(s)",
+        "mystats_fav": "Favourite: {v}",
+        "mystats_last": "Last command: {v}",
+        "unknown_user": "I don't know you yet. Send me a message first.",
+    },
+    "kh": {
+        "welcome": "សួស្តី {name}, ស្វាគមន៍មកកាន់ Daily News។",
+        "language_prompt": "ជ្រើសរើសភាសារបស់អ្នក៖",
+        "language_set_en": "Language set to English. 🇬🇧",
+        "language_set_kh": "បានកំណត់ភាសាខ្មែរ។ 🇰🇭",
+        "menu_shown": "នេះគឺជាម៉ឺនុយរបស់អ្នក 👇 ចុចប៊ូតុងណាមួយក៏បាន — វានៅក្រោមប្រអប់សារ។",
+        "menu_hidden": "បានលាក់ម៉ឺនុយ។ ផ្ញើ /menu ពេលណាក៏បានដើម្បីបង្ហាញវាម្តងទៀត។",
+        "thanks": "អរគុណសម្រាប់សាររបស់អ្នក! ផ្ញើ /quote ដើម្បីទទួលសម្រង់, /quoteimg សម្រាប់រូបភាព, /quiz សម្រាប់ល្បែង, /ask ដើម្បីសួរសំណួរ ឬ /help ដើម្បីមើលអ្វីទាំងអស់ដែលខ្ញុំអាចធ្វើបាន។",
+        "thanks_known": "អរគុណ {name}! អ្នកបានផ្ញើសារមកខ្ញុំ {n} សារហើយ។ ផ្ញើ /quote ដើម្បីទទួលសម្រង់, /quiz សម្រាប់ល្បែង, /ask ដើម្បីសួរសំណួរ ឬ /help ដើម្បីមើលអ្វីទាំងអស់។",
+        "unknown_command": "ខ្ញុំមិនស្គាល់ពាក្យបញ្ជានេះទេ។ សាកល្បង /help ដើម្បីមើលអ្វីដែលខ្ញុំអាចធ្វើបាន។",
+        "admin_only": "មានតែអ្នកគ្រប់គ្រងក្រុមទេដែលអាចប្រើពាក្យបញ្ជានេះបាន។",
+        "admin_group_only": "ពាក្យបញ្ជារបស់អ្នកគ្រប់គ្រងដំណើរការតែក្នុងក្រុមប៉ុណ្ណោះ។ បន្ថែមខ្ញុំទៅក្នុងក្រុម ហើយធ្វើឱ្យខ្ញុំជាអ្នកគ្រប់គ្រង ឬភ្ជាប់ជាមួយ /connect។",
+        "owner_only": "មានតែម្ចាស់ទេដែលអាចធ្វើបែបនេះបាន។",
+        "checkin_done": "អ្នកបាន check-in រួចហើយថ្ងៃនេះ! streak របស់អ្នកគឺ {n} ថ្ងៃ។ ត្រលប់មកវិញនៅថ្ងៃស្អែក។ 🔥",
+        "checkin_new": "✅ បាន check-in! +{xp} XP\n🔥 Streak: {n} ថ្ងៃ — រក្សាវាឱ្យបាននៅថ្ងៃស្អែក!",
+        "no_xp": "មិនទាន់មាន XP ទេ។ ជជែក លេងល្បែង និងឆ្លើយសំណួរដើម្បីទទួល XP! /checkin ផ្តល់ +20 XP ជារៀងរាល់ថ្ងៃ។",
+        "leaderboard_title": "🏆 តារាង XP",
+        "streaks_title": "🔥 Streak វែងជាងគេ៖",
+        "level_line": "⭐ កម្រិត {level} — {xp} XP",
+        "next_level": "កម្រិតបន្ទាប់៖ ត្រូវការ {left} XP ទៀត (កម្រិត {n} នៅ {at} XP)",
+        "global_rank": "ចំណាត់ថ្នាក់សកល៖ លេខ #{rank} ក្នុងចំណោម {total}",
+        "streak_line": "🔥 Daily streak: {n} ថ្ងៃ — /checkin ជារៀងរាល់ថ្ងៃដើម្បីរក្សាវា",
+        "mystats_title": "ស្ថិតិរបស់អ្នក {name}៖",
+        "mystats_messages": "សារ៖ {n}",
+        "mystats_quotes": "សម្រង់ដែលអ្នកបានស្នើសុំ៖ {n}",
+        "mystats_quizzes": "សំណួរដែលបានលេង៖ {n}",
+        "mystats_score": "ពិន្ទុសំណួរ៖ {a}/{b}",
+        "mystats_streak": "🔥 Streak: {n} ថ្ងៃ",
+        "mystats_fav": "ចូលចិត្ត៖ {v}",
+        "mystats_last": "ពាក្យបញ្ជាចុងក្រោយ៖ {v}",
+        "unknown_user": "ខ្ញុំមិនទាន់ស្គាល់អ្នកទេ។ ផ្ញើសារមកខ្ញុំជាមុនសិន។",
+    },
+}
+
+
 HELP_TEXT = (
     "Welcome to Daily News — tech, AI and daily quotes.\n\n"
     "I'm @MuseVishnu_bot, the official bot for @dailynewsreporter.\n\n"
@@ -327,6 +408,7 @@ HELP_TEXT = (
     "/reminders — list your reminders\n"
     "/menu — show the quick menu buttons\n"
     "/hidemenu — hide the quick menu\n"
+    "/language — switch between English and Khmer\n"
     "/time — current time in Phnom Penh\n"
     "/about — about Daily News\n"
     "/rules — group rules\n"
@@ -395,6 +477,137 @@ HELP_TEXT = (
     "/boost on — double referral rewards (auto on weekends)"
     "\n\nInline: type @MuseVishnu_bot in any chat to send a quote, the Mini App or the channel."
 )
+
+# Full Khmer help — shown by /help and /start when the user's language is Khmer.
+HELP_TEXT_KH_1 = (
+    "ស្វាគមន៍មកកាន់ Daily News — ព័ត៌មានបច្ចេកវិទ្យា, AI និងសម្រង់ប្រចាំថ្ងៃ។\n\n"
+    "ខ្ញុំគឺ @MuseVishnu_bot ជា bot ផ្លូវការរបស់ @dailynewsreporter។\n\n"
+    "ព័ត៌មានបច្ចេកវិទ្យា និង AI\n"
+    "/news — របៀបទទួលព័ត៌មាន AI និងបច្ចេកវិទ្យានៅទីនេះ\n"
+    "/ainews — ព័ត៌មានថ្មីៗអំពីម៉ូដែល AI\n"
+    "/models — ម៉ូដែល AI, អ្វីដែលបានផ្លាស់ប្តូរ និងអ្នកណាអាចប្រើបាន\n"
+    "/freeai — ឧបករណ៍ AI ឥតគិតថ្លៃដែលអ្នកអាចប្រើបានថ្ងៃនេះ\n"
+    "/invite — កូដអញ្ជើញ AI ឥតគិតថ្លៃដែលយើងបានចែករំលែក\n"
+    "/addinvite <service> <code> — សម្រាប់ម្ចាស់ប៉ុណ្ណោះ, បន្ថែម​កូដដើម្បីចែករំលែក\n\n"
+    "សម្រង់\n"
+    "/quote — សម្រង់ប្រចាំថ្ងៃ\n"
+    "/love — សម្រង់ស្នេហា\n"
+    "/friend — សម្រង់មិត្តភាព\n"
+    "/khmer — សម្រង់ជាភាសាខ្មែរ (16 សម្រង់)\n"
+    "/quoteimg — សម្រង់ជារូបភាពដែលអាចចែករំលែកបាន\n"
+    "/loveimg — សម្រង់ស្នេហាជារូបភាព\n"
+    "/friendimg — សម្រង់មិត្តភាពជារូបភាព\n"
+    "/khmerimg — សម្រង់ខ្មែរជារូបភាពដែលអាចចែករំលែកបាន\n"
+    "/story — រូបភាព story ថ្ងៃនេះ, រួចរាល់សម្រាប់បង្ហោះ\n"
+    "/addquote <text> — សម្រាប់ម្ចាស់ប៉ុណ្ណោះ, បន្ថែមសម្រង់ទៅក្នុងបណ្ណាល័យ\n"
+    "/daily — ទទួលសម្រង់ជារៀងរាល់ព្រឹកម៉ោង 8:42\n"
+    "/stopdaily — បញ្ឈប់សម្រង់ប្រចាំថ្ងៃ\n\n"
+    "កាលវិភាគ\n"
+    "/schedule — ពេលវេលាដែល channel បង្ហោះជារៀងរាល់ថ្ងៃ\n\n"
+    "Channel\n"
+    "/channel — channel របស់យើង @dailynewsreporter\n"
+    "/postquote — បង្ហោះសម្រង់ទៅកាន់ channel ឥឡូវនេះ\n"
+    "/postnews <title> | <summary> | <source> — សម្រាប់ម្ចាស់ប៉ុណ្ណោះ, បង្ហោះព័ត៌មានទៅកាន់ channel\n\n"
+    "ល្បែង និងភាពសប្បាយ\n"
+    "/quiz — សំណួរ (30 សំណួរ!)\n"
+    "/khmerquiz — សំណួរជាភាសាខ្មែរ (10 សំណួរ!)\n"
+    "/guess — ទាយលេខរបស់ខ្ញុំ, ពី 1 ដល់ 100\n"
+    "/rps — ថ្ម, ក្រដាស, កន្ត្រៃ\n"
+    "/dice — គ្រាប់ឡុកឡាក់ 🎲\n"
+    "/darts — បាញ់ព្រួញ 🎯\n"
+    "/bowling — វាយប៊ូលីង 🎳\n"
+    "/basketball — បោះបាល់បោះ 🏀\n"
+    "/football — ទាត់បាល់ ⚽\n"
+    "/slots — ម៉ាស៊ីនស្លុត 🎰\n"
+    "/scramble — រៀបពាក្យដែលលាយឡំឱ្យត្រូវ\n"
+    "/poll Question | Yes | No — បង្កើតការបោះឆ្នោត\n"
+    "/score — ពិន្ទុសំណួរ\n"
+    "/joke — រឿងកំប្លែង\n"
+    "/motivate — លើកទឹកចិត្ត\n\n"
+)
+
+HELP_TEXT_KH_2 = (
+    "ជជែកឆ្លាតវៃ និងស្ថិតិ\n"
+    "/ask <question> — សួរខ្ញុំអ្វីក៏បាន, ឧ. /ask 12+8\n"
+    "/stats — ដំណើរការរបស់ bot\n"
+    "/mystats — សាររបស់អ្នក, សម្រង់ និងពិន្ទុសំណួរ\n"
+    "/top — អ្នកលេងសំណួរល្អជាងគេ និងអ្នកជជែកសកម្មជាងគេ\n\n"
+    "ឧបករណ៍\n"
+    "/remind 10m drink water — រំលឹកអ្នកនៅពេលក្រោយ\n"
+    "/reminders — បញ្ជីរំលឹករបស់អ្នក\n"
+    "/menu — បង្ហាញប៊ូតុងម៉ឺនុយរហ័ស\n"
+    "/hidemenu — លាក់ម៉ឺនុយរហ័ស\n"
+    "/language — ជ្រើសរើសភាសា English ឬ ខ្មែរ\n"
+    "/time — ម៉ោងបច្ចុប្បន្ននៅភ្នំពេញ\n"
+    "/about — អំពី Daily News\n"
+    "/rules — ច្បាប់របស់ក្រុម\n"
+    "/info — ព័ត៌មានអំពីការជជែកនេះ\n\n"
+    "អំណាចក្រុម (សម្រាប់អ្នកគ្រប់គ្រងប៉ុណ្ណោះ, bot ក៏ត្រូវជាអ្នកគ្រប់គ្រងដែរ)\n"
+    "/admins, /ban, /unban, /kick, /mute, /unmute, /warn, /warns, /pin, /unpin, /del, /lock, /unlock, /setwelcome, /setrules, /antilink, /antispam\n"
+    "/tban 1d — ហាមជាបណ្ដោះអាសន្ន, ដកហាមដោយស្វ័យប្រវត្តិ\n"
+    "/lock sticker — ចាក់សោប្រភេទសារ, /locks ដើម្បីមើលបញ្ជី, /locktypes ដើម្បីមើលទាំងអស់\n"
+    "/disable /quote — បិទពាក្យបញ្ជានៅទីនេះ, /enable ដើម្បីបើកវិញ\n"
+    "/approve — លើកលែងសមាជិកពីការចាក់សោ, តំណភ្ជាប់ និងការត្រួតពិនិត្យទឹកជំនន់\n"
+    "/setflood 8 — សារប៉ុន្មានក្នុង 10 វិនាទីត្រូវបានចាត់ទុកជាទឹកជំនន់\n"
+    "/setgoodbye Bye {name} — សារនៅពេលសមាជិកចាកចេញ\n"
+    "/fsub @DailyNewsReporter — សមាជិកត្រូវចូលរួម channel ដើម្បីជជែក\n"
+    "/antiraid on — បិទសំឡេងអ្នកចូលថ្មីនៅពេលមានការចូលច្រើន\n"
+    "/cleanservice on — លុបសេចក្តីជូនដំណឹងចូល/ចាកចេញ\n"
+    "/antichannel on — ទប់ស្កាត់សារដែលផ្ញើជាទម្រង់ channel\n"
+    "/id — ID របស់អ្នក, ID របស់ក្រុមនេះ ឬ ID របស់អ្នកប្រើដែលអ្នកបានឆ្លើយតប\n"
+    "/promote, /demote, /purge — គ្រប់គ្រងអ្នកគ្រប់គ្រង និងសម្អាតឱ្យលឿន\n"
+    "/settings — បន្ទះការកំណត់ជាមួយប៊ូតុង\n"
+    "/connect @Group — គ្រប់គ្រងក្រុមពីការជជែកឯកជននេះ\n\n"
+    "សហព័ន្ធ — ចែករំលែកការហាមនៅគ្រប់ក្រុមរបស់អ្នក\n"
+    "/newfed Name — បង្កើតសហព័ន្ធ\n"
+    "/joinfed FED-ID — បន្ថែមក្រុមនេះទៅក្នុងសហព័ន្ធ\n"
+    "/fban — ហាមអ្នករំខាននៅគ្រប់ក្រុមក្នុងសហព័ន្ធក្នុងពេលតែមួយ\n"
+    "/unfban, /fedinfo, /fedlist, /fedbans\n\n"
+    "កំណត់ចំណាំ និងតម្រង\n"
+    "/save name text — រក្សាទុកកំណត់ចំណាំ, អានវាដោយ /get name ឬ #name\n"
+    "/notes, /clear name — បញ្ជី និងលុបកំណត់ចំណាំ\n"
+    "/filter word reply — ឆ្លើយដោយស្វ័យប្រវត្តិនៅពេលមានអ្នកនិយាយពាក្យនោះ\n"
+    "/filters, /stop word — បញ្ជី និងដកតម្រងចេញ\n\n"
+    "សុវត្ថិភាព\n"
+    "/captcha on — សមាជិកថ្មីចុចប៊ូតុងដើម្បីបញ្ជាក់ថាពួកគេជាមនុស្ស\n"
+    "/report — ឆ្លើយតបទៅសារដើម្បីរាយការណ៍ទៅអ្នកគ្រប់គ្រង\n"
+    "/addblacklist word, /blacklist, /blacklistmode delete|warn|mute\n"
+    "/addsticker — ឆ្លើយតបទៅ sticker ដើម្បីដាក់វាក្នុងបញ្ជីខ្មៅ\n\n"
+    "កម្រិត និងភាពសប្បាយ\n"
+    "/checkin — check-in ប្រចាំថ្ងៃ, +20 XP និងរក្សា streak របស់អ្នក\n"
+    "/rank — XP, កម្រិត និង streak របស់អ្នក\n"
+    "/leaderboard — អ្នកលេងល្អជាងគេ និង streak វែងជាងគេ\n"
+    "/tournament — ការប្រកួតសំណួរ 5 សំណួរក្នុងក្រុម, អ្នកឈ្នះ +50 XP\n"
+    "/digest — សង្ខេបប្រចាំថ្ងៃផ្ទាល់ខ្លួនរបស់អ្នក\n\n"
+    "ឆ្លាតវៃ និងសុវត្ថិភាព\n"
+    "/ask — សួរខ្ញុំអ្វីក៏បាន, ឥឡូវនេះឆ្លើយដោយ AI ពិតប្រាកដនៅពេលខ្ញុំមិនដឹង\n"
+    "/summarize — ឆ្លើយតបទៅសារ ហើយខ្ញុំនឹងសង្ខេបវាជា 3 ចំណុច\n"
+    "/aiquiz <topic> — សំណួរ AI ថ្មីៗ, លើប្រធានបទណាក៏បាន\n"
+    "/afk <reason> — ប្រាប់អ្នកគ្រប់គ្នាថាអ្នកមិននៅ, ខ្ញុំនឹងឆ្លើយជំនួសអ្នក\n"
+    "/autodel on — លុបសារពាក្យបញ្ជាបន្ទាប់ពីខ្ញុំឆ្លើយ (ក្នុងក្រុម)\n"
+    "/check — ឆ្លើយតបទៅសារ, AI ប្រាប់ថាវាជា spam, scam, abuse ឬ harmless\n"
+    "/aimod on — AI ពិនិត្យសារតំណភ្ជាប់ពីអ្នកមិនមែនជាអ្នកគ្រប់គ្រង ហើយលុបសារអាក្រក់ចេញ\n"
+    "/setlog @Channel — កត់ត្រា bans, mutes, warns, fbans និង purges នៅទីនោះ\n"
+    "/backup — ការកំណត់ក្រុមជាទម្រង់ JSON, /restore ដើម្បីនាំវាត្រលប់មកវិញ\n\n"
+    "ការរីកចម្រើន និង Premium\n"
+    "/referral — តំណអញ្ជើញរបស់អ្នក, មិត្តភក្តិទទួលបាន +20 XP, អ្នកទទួលបាន +50 XP ក្នុងម្នាក់\n"
+    "/topreferrers — អ្នកណាអញ្ជើញមិត្តភក្តិច្រើនជាងគេ\n"
+    "/premium — 150 Stars សម្រាប់ Premium អស់មួយជីវិត៖ XP ទ្វេដង និងសញ្ញា ⭐\n"
+    "/shop — ហាង Stars៖ XP Boost (50), រូបភាពសម្រង់ផ្ទាល់ខ្លួន (30), Premium (150)\n"
+    "/customquote <ពាក្យរបស់អ្នក> — បម្លែងពាក្យរបស់អ្នកទៅជារូបភាពសម្រង់ (ត្រូវការ credit ពី /shop)\n"
+    "/sponsor <message> — សម្រាប់ម្ចាស់ប៉ុណ្ណោះ, បង្ហោះសារឧបត្ថម្ភទៅកាន់ channel\n"
+    "/analytics — សម្រាប់ម្ចាស់ប៉ុណ្ណោះ, អ្នកប្រើ, សារ, ការលក់ក្នុងហាង និងពាក្យបញ្ជាកំពូល\n\n"
+    "Channel និងមាតិកា (សម្រាប់ម្ចាស់)\n"
+    "/broadcast — ផ្ញើសារទៅកាន់អ្នកជាវទាំងអស់\n"
+    "/schedulepost 18:30 text — ដាក់សារក្នុងជួរសម្រាប់បង្ហោះ, /scheduled ដើម្បីមើលបញ្ជី, /cancelschedule ដើម្បីលុបចោល\n\n"
+    "ការរីកចម្រើន\n"
+    "/giveaway premium — ចាប់ផ្តើម giveaway ក្នុងក្រុម, /draw ជ្រើសរើសអ្នកឈ្នះ\n"
+    "/share — ការផ្សព្វផ្សាយដែលរួចរាល់សម្រាប់បញ្ជូនបន្តអំពី Daily News\n"
+    "/boost on — រង្វាន់អញ្ជើញទ្វេដង (បើកដោយស្វ័យប្រវត្តិនៅចុងសប្តាហ៍)"
+    "\n\nInline៖ វាយ @MuseVishnu_bot ក្នុងការជជែកណាមួយដើម្បីផ្ញើសម្រង់, Mini App ឬ channel។"
+)
+
+HELP_TEXT_KH = HELP_TEXT_KH_1 + HELP_TEXT_KH_2
 
 ABOUT_TEXT = (
     "Daily News — @dailynewsreporter\n\n"
@@ -1312,6 +1525,7 @@ MINI_APP_URL = "https://muse.ai/s/daily-news-mini-app-nl6exp9ekxafr/GQF2XII7qd6J
 BOT_COMMANDS = [
     ("start", "Start Daily News"),
     ("menu", "Show the quick menu"),
+    ("language", "Switch between English and Khmer"),
     ("hidemenu", "Hide the quick menu"),
     ("app", "Open the Daily News Mini App"),
     ("help", "All commands"),
@@ -1347,7 +1561,6 @@ BOT_COMMANDS = [
     ("poll", "Make a poll"),
     ("score", "Quiz scores"),
     ("ask", "Ask me a question"),
-    ("summarize", "Summarize a replied message"),
     ("aiquiz", "A fresh AI quiz question"),
     ("afk", "Set yourself away from keyboard"),
     ("stats", "Bot stats"),
@@ -1515,23 +1728,43 @@ def start_keyboard():
     }
 
 
-def main_menu_keyboard():
+def main_menu_keyboard(lang="en"):
     """Persistent chat menu: quick buttons under the message box.
 
     The first button opens the Daily News Mini App right from the
     keyboard; the rest send their label as a message, which the bot
-    answers like the matching command.
+    answers like the matching command. Labels follow the user's language.
     """
+    labels = {
+        "en": ("📱 Daily News App", "💬 Quote", "📰 News", "🎮 Games", "❤️ Love", "🤝 Friend", "🇰🇭 Khmer", "🎯 Quiz", "📅 Schedule", "ℹ️ Help"),
+        "kh": ("📱 កម្មវិធី Daily News", "💬 សម្រង់", "📰 ព័ត៌មាន", "🎮 ល្បែង", "❤️ ស្នេហា", "🤝 មិត្តភាព", "🇰🇭 ខ្មែរ", "🎯 សំណួរ", "📅 កាលវិភាគ", "ℹ️ ជំនួយ"),
+    }
+    app, quote, news, games, love, friend, khmer, quiz, schedule, helpb = labels.get(lang, labels["en"])
     return {
         "keyboard": [
-            [{"text": "📱 Daily News App", "web_app": {"url": MINI_APP_URL}}],
-            [{"text": "💬 Quote"}, {"text": "📰 News"}, {"text": "🎮 Games"}],
-            [{"text": "❤️ Love"}, {"text": "🤝 Friend"}, {"text": "🇰🇭 Khmer"}],
-            [{"text": "🎯 Quiz"}, {"text": "📅 Schedule"}, {"text": "ℹ️ Help"}],
+            [{"text": app, "web_app": {"url": MINI_APP_URL}}],
+            [{"text": quote}, {"text": news}, {"text": games}],
+            [{"text": love}, {"text": friend}, {"text": khmer}],
+            [{"text": quiz}, {"text": schedule}, {"text": helpb}],
         ],
         "resize_keyboard": True,
         "is_persistent": True,
     }
+
+
+# Menu taps in both languages map to the same action.
+MENU_TAP_QUOTES = {
+    "💬 Quote": "any", "💬 សម្រង់": "any",
+    "❤️ Love": "love", "❤️ ស្នេហា": "love",
+    "🤝 Friend": "friend", "🤝 មិត្តភាព": "friend",
+    "🇰🇭 Khmer": "khmer",
+}
+MENU_TAP_NEWS = ("📰 News", "📰 ព័ត៌មាន")
+MENU_TAP_GAMES = ("🎮 Games", "🎮 ល្បែង")
+MENU_TAP_QUIZ = ("🎯 Quiz", "🎯 សំណួរ")
+MENU_TAP_SCHEDULE = ("📅 Schedule", "📅 កាលវិភាគ")
+MENU_TAP_HELP = ("ℹ️ Help", "ℹ️ ជំនួយ")
+MENU_TAPS = tuple(MENU_TAP_QUOTES) + MENU_TAP_NEWS + MENU_TAP_GAMES + MENU_TAP_QUIZ + MENU_TAP_SCHEDULE + MENU_TAP_HELP
 
 
 def hide_menu_keyboard():
@@ -1777,7 +2010,7 @@ def referral_code(state, uid, name):
     return rec["code"]
 
 
-def rank_text(state, uid, name):
+def rank_text(state, uid, name, lang="en"):
     rec = xp_record(state, uid)
     xp = rec["xp"]
     level = xp_level(xp)
@@ -1786,6 +2019,14 @@ def rank_text(state, uid, name):
     rank = next((i + 1 for i, (k, _v) in enumerate(ranked) if k == str(uid)), len(ranked))
     streak = state.get("streaks", {}).get(str(uid), {"count": 0})
     premium = " ⭐ Premium" if str(uid) in state.get("premium", {}) else ""
+    if lang == "kh":
+        return (
+            f"🏆 ចំណាត់ថ្នាក់របស់ {name}{premium}\n\n"
+            f"⭐ កម្រិត {level} — {xp} XP\n"
+            f"កម្រិតបន្ទាប់៖ ត្រូវការ {nxt - xp} XP ទៀត (កម្រិត {level + 1} នៅ {nxt} XP)\n"
+            f"ចំណាត់ថ្នាក់សកល៖ លេខ #{rank} ក្នុងចំណោម {len(ranked)}\n"
+            f"🔥 Daily streak: {streak.get('count', 0)} ថ្ងៃ — /checkin ជារៀងរាល់ថ្ងៃដើម្បីរក្សាវា"
+        )
     return (
         f"🏆 {name}'s rank{premium}\n\n"
         f"⭐ Level {level} — {xp} XP\n"
@@ -1795,23 +2036,24 @@ def rank_text(state, uid, name):
     )
 
 
-def leaderboard_text(state):
+def leaderboard_text(state, lang="en"):
     xp = state.get("xp", {})
+    kh = lang == "kh"
     if not xp:
-        return "No XP yet. Chat, play games and answer quizzes to earn XP! /checkin gives +20 XP every day."
+        return "មិនទាន់មាន XP ទេ។ ជជែក លេងល្បែង និងឆ្លើយសំណួរដើម្បីទទួល XP! /checkin ផ្តល់ +20 XP ជារៀងរាល់ថ្ងៃ។" if kh else "No XP yet. Chat, play games and answer quizzes to earn XP! /checkin gives +20 XP every day."
     ranked = sorted(xp.items(), key=lambda kv: kv[1]["xp"], reverse=True)[:10]
-    lines = ["🏆 XP Leaderboard\n"]
+    lines = ["🏆 តារាង XP\n" if kh else "🏆 XP Leaderboard\n"]
     medals = ["🥇", "🥈", "🥉"]
     for i, (k, r) in enumerate(ranked):
         medal = medals[i] if i < 3 else f"{i + 1}."
         star = " ⭐" if k in state.get("premium", {}) else ""
-        lines.append(f"{medal} {r.get('name', 'friend')}{star} — Level {xp_level(r['xp'])} ({r['xp']} XP)")
+        lines.append(f"{medal} {r.get('name', 'friend')}{star} — {'កម្រិត' if kh else 'Level'} {xp_level(r['xp'])} ({r['xp']} XP)")
     streaks = state.get("streaks", {})
     if streaks:
         top_streak = sorted(streaks.values(), key=lambda s: s.get("count", 0), reverse=True)[:5]
-        lines.append("\n🔥 Longest streaks:")
+        lines.append("\n🔥 Streak វែងជាងគេ៖" if kh else "\n🔥 Longest streaks:")
         for i, s in enumerate(top_streak):
-            lines.append(f"{i + 1}. {s.get('name', 'friend')} — {s.get('count', 0)} day(s)")
+            lines.append(f"{i + 1}. {s.get('name', 'friend')} — {s.get('count', 0)} {'ថ្ងៃ' if kh else 'day(s)'})")
     return "\n".join(lines)
 
 
@@ -2045,6 +2287,13 @@ def handle_update(update, state, dry_run=False):
             gid = int(data.split(":", 1)[1]) if data.split(":", 1)[1].lstrip("-").isdigit() else None
             rules = get_group_settings(state, gid).get("rules", "") if gid else ""
             actions.append({"type": "text", "chat_id": chat_id, "text": f"📜 Group rules:\n\n{rules}" if rules else "No rules set yet — admins can set them with /setrules."})
+        elif data.startswith("lang:"):
+            lang = data.split(":", 1)[1]
+            uid = (cb.get("from") or {}).get("id")
+            if lang in ("en", "kh") and uid:
+                rec = state.setdefault("users", {}).setdefault(str(uid), {"name": (cb.get("from") or {}).get("first_name", "friend"), "messages": 0, "quotes": 0, "quizzes": 0, "first_seen": int(time.time()), "last_seen": int(time.time()), "last_command": "", "favourite": "", "lang": "en", "username": (cb.get("from") or {}).get("username", "")})
+                rec["lang"] = lang
+                actions.append({"type": "text", "chat_id": chat_id, "text": tr(state, uid, "language_set_en") if lang == "en" else tr(state, uid, "language_set_kh")})
         elif data.startswith("buy:"):
             item = data.split(":", 1)[1]
             uid = (cb.get("from") or {}).get("id")
@@ -2298,7 +2547,7 @@ def handle_update(update, state, dry_run=False):
                 actions.append({"type": "text", "chat_id": chat_id, "text": f"{sender.get('first_name', 'friend')} was muted for 5 minutes for flooding."})
                 return actions
         # Menu taps and game answers must not be eaten by filters or blacklists.
-        menu_taps = ("💬 Quote", "❤️ Love", "🤝 Friend", "🇰🇭 Khmer", "📰 News", "🎮 Games", "🎯 Quiz", "📅 Schedule", "ℹ️ Help")
+        menu_taps = MENU_TAPS
         if text not in menu_taps:
             # AI moderation (opt-in): check link messages from non-admins
             if not admin and settings.get("aimod") and ("http://" in text or "https://" in text or "t.me/" in text):
@@ -2377,6 +2626,7 @@ def handle_update(update, state, dry_run=False):
         first = (message.get("from") or {}).get("first_name", "friend")
         my_code = referral_code(state, sender_id, first)
         extra = ""
+        help_text = HELP_TEXT_KH if user_lang(state, sender_id) == "kh" else HELP_TEXT
         if args.startswith("ref_"):
             code = args[4:].strip()
             ref_uid = next((k for k, v in state.get("referrals", {}).items() if v.get("code") == code), None)
@@ -2394,9 +2644,9 @@ def handle_update(update, state, dry_run=False):
                 award_xp(state, sender_id, first, base_new)
                 extra = f"\n\n🎉 You joined through {ref_rec.get('name', 'a friend')}'s invite! You got +{amt_new} XP and they got +{amt_ref} XP." + (" 🔥 Referral boost is ON — double rewards!" if boost else "")
                 actions.append({"type": "text", "chat_id": int(ref_uid), "text": f"🎉 {first} joined with your invite! +{amt_ref} XP. You have invited {ref_rec['count']} friend(s)."})
-        reply(f"Hi {first}, welcome to Daily News.\n\n{HELP_TEXT}\n\n🔗 Invite friends, earn XP: https://t.me/MuseVishnu_bot?start=ref_{my_code} (see /referral){extra}", keyboard=start_keyboard())
+        reply(f"{tr(state, sender_id, 'welcome', name=first)}\n\n{help_text}\n\n🔗 Invite friends, earn XP: https://t.me/MuseVishnu_bot?start=ref_{my_code} (see /referral){extra}", keyboard=start_keyboard())
     elif command == "/help":
-        reply(HELP_TEXT)
+        reply(HELP_TEXT_KH if user_lang(state, sender_id) == "kh" else HELP_TEXT)
     elif command == "/about":
         reply(ABOUT_TEXT)
     elif command == "/news":
@@ -2470,9 +2720,11 @@ def handle_update(update, state, dry_run=False):
     elif command == "/app":
         actions.append({"type": "text", "chat_id": chat_id, "text": "📱 Daily News Mini App — quotes, AI news, free AI tools, invite codes, quiz and the schedule, all in one place.", "keyboard": {"inline_keyboard": [[{"text": "📱 Open Daily News App", "web_app": {"url": MINI_APP_URL}}]]}})
     elif command == "/menu":
-        reply("Here's your menu 👇 Tap a button any time — it stays under the message box.", keyboard=main_menu_keyboard())
+        reply(tr(state, sender_id, "menu_shown"), keyboard=main_menu_keyboard(user_lang(state, sender_id)))
     elif command == "/hidemenu":
-        reply("Menu hidden. Send /menu any time to bring it back.", keyboard=hide_menu_keyboard())
+        reply(tr(state, sender_id, "menu_hidden"), keyboard=hide_menu_keyboard())
+    elif command in ("/language", "/lang"):
+        reply(tr(state, sender_id, "language_prompt"), keyboard={"inline_keyboard": [[{"text": "🇬🇧 English", "callback_data": "lang:en"}, {"text": "🇰🇭 ខ្មែរ", "callback_data": "lang:kh"}]]})
     elif command in ("/quoteimg", "/loveimg", "/friendimg", "/khmerimg"):
         kind = "love" if command == "/loveimg" else "friend" if command == "/friendimg" else "khmer" if command == "/khmerimg" else "any"
         _q = pick_quote(kind)
@@ -2511,12 +2763,12 @@ def handle_update(update, state, dry_run=False):
     elif command in ("/ban", "/unban", "/kick", "/mute", "/unmute", "/warn", "/warns", "/unwarn", "/pin", "/unpin", "/del", "/lock", "/unlock", "/locks", "/locktypes", "/tban", "/setwelcome", "/setrules", "/antilink", "/antispam"):
         gchat = admin_chat
         if chat_type not in ("group", "supergroup") and not connected_group:
-            reply("Admin commands only work in a group. Add me to a group and make me an admin, or connect to one with /connect.")
+            reply(tr(state, sender_id, "admin_group_only"))
         elif not is_admin(gchat, sender_id, dry_run=dry_run, sender_chat_id=_schat):
             if not dry_run and not bot_is_admin(gchat, dry_run=dry_run):
                 reply("I need to be an admin in this group first — make me an admin (Group settings → Administrators → add @MuseVishnu_bot), then try again.")
             else:
-                reply("Only group admins can use that command.")
+                reply(tr(state, sender_id, "admin_only"))
         elif command == "/setwelcome":
             get_group_settings(state, gchat)["welcome"] = args
             reply(f"Welcome message saved. Use {{name}} for the new member's name.\n\n{args}" if args else "Tell me the welcome text, like /setwelcome Welcome {name}!")
@@ -2957,7 +3209,7 @@ def handle_update(update, state, dry_run=False):
         st = state.setdefault("streaks", {}).setdefault(str(sender_id), {"count": 0, "last": "", "name": sender.get("first_name", "friend")})
         st["name"] = sender.get("first_name", "friend")
         if st.get("last") == today:
-            reply(f"Already checked in today! Your streak is {st['count']} day(s). Come back tomorrow. 🔥")
+            reply(tr(state, sender_id, "checkin_done", n=st['count']))
         else:
             if st.get("last") == yesterday:
                 st["count"] += 1
@@ -2966,14 +3218,14 @@ def handle_update(update, state, dry_run=False):
             st["last"] = today
             leveled = award_xp(state, sender_id, sender.get("first_name", "friend"), 20)
             amt = xp_amount(state, sender_id, 20)
-            msg = f"✅ Checked in! +{amt} XP\n🔥 Streak: {st['count']} day(s) — keep it alive tomorrow!"
+            msg = tr(state, sender_id, "checkin_new", xp=amt, n=st['count'])
             if leveled:
                 msg += f"\n\n🎉 LEVEL UP! You are now Level {leveled}!"
             reply(msg)
     elif command == "/rank":
-        reply(rank_text(state, sender_id, sender.get("first_name", "friend")))
+        reply(rank_text(state, sender_id, sender.get("first_name", "friend"), user_lang(state, sender_id)))
     elif command == "/leaderboard":
-        reply(leaderboard_text(state))
+        reply(leaderboard_text(state, user_lang(state, sender_id)))
     elif command == "/tournament":
         if chat_type not in ("group", "supergroup"):
             reply("Tournaments run in a group — add me to a group and send /tournament there!")
@@ -3140,7 +3392,7 @@ def handle_update(update, state, dry_run=False):
             actions.append({"type": "photo", "chat_id": chat_id, "quote": args.strip(), "caption": "Made with @MuseVishnu_bot"})
     elif command == "/sponsor":
         if sender_id != OWNER_ID:
-            reply("Only the owner can post sponsored messages.")
+            reply(tr(state, sender_id, "owner_only"))
         elif not args.strip():
             reply("Send /sponsor <message> to post a sponsored message to the channel.")
         elif not state.get("channel_id"):
@@ -3151,7 +3403,7 @@ def handle_update(update, state, dry_run=False):
             reply("Sponsored post sent to the channel.")
     elif command == "/analytics":
         if sender_id != OWNER_ID:
-            reply("Only the owner can see analytics.")
+            reply(tr(state, sender_id, "owner_only"))
         else:
             stats = state.get("stats", {})
             cmds = stats.get("commands", {})
@@ -3175,7 +3427,7 @@ def handle_update(update, state, dry_run=False):
             )
     elif command == "/broadcast":
         if sender_id != OWNER_ID:
-            reply("Only the owner can broadcast.")
+            reply(tr(state, sender_id, "owner_only"))
         elif not args:
             reply("Use: /broadcast Your message — I'll send it to every subscriber.")
         else:
@@ -3188,7 +3440,7 @@ def handle_update(update, state, dry_run=False):
                 reply(f"Broadcast sent to {len(subs)} subscriber(s).")
     elif command == "/schedulepost":
         if sender_id != OWNER_ID:
-            reply("Only the owner can schedule channel posts.")
+            reply(tr(state, sender_id, "owner_only"))
         elif not args:
             reply("Use: /schedulepost 18:30 Your message — or /schedulepost tomorrow 09:00 Your message")
         else:
@@ -3202,7 +3454,7 @@ def handle_update(update, state, dry_run=False):
                 reply(f"📅 Scheduled for the channel at {when} (Phnom Penh).\nID: {pid}\nSee /scheduled to list, /cancelschedule {pid} to cancel.")
     elif command == "/scheduled":
         if sender_id != OWNER_ID:
-            reply("Only the owner can see scheduled posts.")
+            reply(tr(state, sender_id, "owner_only"))
         else:
             posts = state.get("scheduled_posts", [])
             if not posts:
@@ -3215,7 +3467,7 @@ def handle_update(update, state, dry_run=False):
                 reply("\n".join(lines))
     elif command == "/cancelschedule":
         if sender_id != OWNER_ID:
-            reply("Only the owner can cancel scheduled posts.")
+            reply(tr(state, sender_id, "owner_only"))
         elif not args:
             reply("Use: /cancelschedule sp_XXXXXX — see /scheduled for the IDs.")
         else:
@@ -3291,7 +3543,7 @@ def handle_update(update, state, dry_run=False):
         )
     elif command == "/boost":
         if sender_id != OWNER_ID:
-            reply("Only the owner can change the referral boost.")
+            reply(tr(state, sender_id, "owner_only"))
         elif not args:
             status = "ON" if referral_boost_active(state) else "OFF"
             reply(f"🔥 Referral boost is {status}.\n\nWeekends boost automatically. /boost on forces it on, /boost off forces it off, /boost auto returns to weekend-only.")
@@ -3575,21 +3827,22 @@ def handle_update(update, state, dry_run=False):
         )
     elif command == "/mystats":
         if not user_record:
-            reply("I don't know you yet. Send me a message first.")
+            reply(tr(state, sender_id, "unknown_user"))
         else:
             score = state.get("scores", {}).get(str((message.get("from") or {}).get("id", "")), {"correct": 0, "total": 0})
             rec = xp_record(state, (message.get("from") or {}).get("id", ""))
             streak = state.get("streaks", {}).get(str((message.get("from") or {}).get("id", "")), {"count": 0})
+            lang = user_lang(state, sender_id)
             reply(
-                f"Your stats, {user_record.get('name', 'friend')}:\n"
-                f"Messages: {user_record.get('messages', 0)}\n"
-                f"Quotes you asked for: {user_record.get('quotes', 0)}\n"
-                f"Quizzes played: {user_record.get('quizzes', 0)}\n"
-                f"Quiz score: {score.get('correct', 0)}/{score.get('total', 0)}\n"
-                f"⭐ Level {xp_level(rec['xp'])} — {rec['xp']} XP\n"
-                f"🔥 Streak: {streak.get('count', 0)} day(s)\n"
-                f"Favourite: {user_record.get('favourite') or 'not yet'}\n"
-                f"Last command: {user_record.get('last_command') or 'none'}"
+                f"{tr(state, sender_id, 'mystats_title', name=user_record.get('name', 'friend'))}\n"
+                f"{tr(state, sender_id, 'mystats_messages', n=user_record.get('messages', 0))}\n"
+                f"{tr(state, sender_id, 'mystats_quotes', n=user_record.get('quotes', 0))}\n"
+                f"{tr(state, sender_id, 'mystats_quizzes', n=user_record.get('quizzes', 0))}\n"
+                f"{tr(state, sender_id, 'mystats_score', a=score.get('correct', 0), b=score.get('total', 0))}\n"
+                f"{tr(state, sender_id, 'level_line', level=xp_level(rec['xp']), xp=rec['xp'])}\n"
+                f"{tr(state, sender_id, 'mystats_streak', n=streak.get('count', 0))}\n"
+                f"{tr(state, sender_id, 'mystats_fav', v=user_record.get('favourite') or ('មិនទាន់មាន' if lang == 'kh' else 'not yet'))}\n"
+                f"{tr(state, sender_id, 'mystats_last', v=user_record.get('last_command') or ('គ្មាន' if lang == 'kh' else 'none'))}"
             )
     elif command == "/top":
         scores = state.get("scores", {})
@@ -3608,20 +3861,19 @@ def handle_update(update, state, dry_run=False):
         reply(random.choice(JOKES))
     elif command == "/motivate":
         reply(random.choice(MOTIVATION))
-    elif text in ("💬 Quote", "❤️ Love", "🤝 Friend", "🇰🇭 Khmer"):
-        kind = {"💬 Quote": "any", "❤️ Love": "love", "🤝 Friend": "friend", "🇰🇭 Khmer": "khmer"}[text]
-        reply(pick_quote(kind))
-    elif text == "📰 News":
+    elif text in MENU_TAP_QUOTES:
+        reply(pick_quote(MENU_TAP_QUOTES[text]))
+    elif text in MENU_TAP_NEWS:
         reply(NEWS_TEXT)
-    elif text == "🎮 Games":
+    elif text in MENU_TAP_GAMES:
         reply(GAMES_MENU_TEXT)
-    elif text == "🎯 Quiz":
+    elif text in MENU_TAP_QUIZ:
         q = random.choice(QUIZ_QUESTIONS)
         actions.append({"type": "quiz", "chat_id": chat_id, "question": q})
-    elif text == "📅 Schedule":
+    elif text in MENU_TAP_SCHEDULE:
         reply(SCHEDULE_TEXT)
-    elif text == "ℹ️ Help":
-        reply(HELP_TEXT)
+    elif text in MENU_TAP_HELP:
+        reply(HELP_TEXT_KH if user_lang(state, sender_id) == "kh" else HELP_TEXT)
     elif not text.startswith("/") and text.strip().lstrip("-").isdigit() and str(chat_id) in state.get("guess_games", {}):
         guess = int(text.strip())
         game = state["guess_games"][str(chat_id)]
@@ -3663,7 +3915,7 @@ def handle_update(update, state, dry_run=False):
     elif "good night" in lower:
         reply("Good night! Sleep well. Here's a quote for tomorrow: " + pick_quote("any"))
     elif text.startswith("/"):
-        reply("I don't know that command yet. Try /help to see what I can do.")
+        reply(tr(state, sender_id, "unknown_command"))
     elif any(w in lower for w in ("i am sad", "i'm sad", "i feel sad", "i am tired", "i'm tired", "i feel down", "i am lonely")):
         name = (message.get("from") or {}).get("first_name", "friend")
         reply(f"I'm sorry you're feeling that way, {name}. Here's something for you: {pick_quote('any')}")
@@ -3697,9 +3949,9 @@ def handle_update(update, state, dry_run=False):
         if ai:
             reply(ai)
         elif user_record and user_record.get("messages", 0) > 3:
-            reply(f"Thanks, {user_record.get('name', 'friend')}! You have sent me {user_record.get('messages', 0)} messages now. Send /quote for a quote, /quiz for a game, /ask to ask me something, or /help to see everything.")
+            reply(tr(state, sender_id, "thanks_known", name=user_record.get('name', 'friend'), n=user_record.get('messages', 0)))
         else:
-            reply("Thanks for your message! Send /quote for a quote, /quoteimg for a picture, /quiz for a game, /ask to ask me something, or /help to see everything I can do.")
+            reply(tr(state, sender_id, "thanks"))
     if msg_leveled:
         actions.append({"type": "text", "chat_id": chat_id, "text": f"🎉 LEVEL UP! You are now Level {msg_leveled}! Keep chatting and playing to earn more XP."})
     # Auto-delete command messages in groups when autodel is on (non-admin commands only).
@@ -4277,6 +4529,9 @@ def run_tests():
     check3b("plain chat answered by AI in English", any(t == "[test AI reply]" for t in texts(a)))
     a = handle_update({"update_id": 405, "message": {"chat": dm, "from": player, "text": "Can you write Khmer"}}, state, dry_run=True)
     check3b("can you write khmer switches language", state.get("users", {}).get("777", {}).get("lang") == "kh")
+    # Leave the test user back in English so later phases see English replies.
+    handle_update({"update_id": 406, "message": {"chat": dm, "from": player, "text": "Reply in English please"}}, state, dry_run=True)
+    check3b("language reset to English", state.get("users", {}).get("777", {}).get("lang") == "en")
     print(f"phase 3b checks: {len(fails)} failures")
     if fails:
         print("FAILED: " + "; ".join(fails))
@@ -4694,6 +4949,50 @@ def run_tests():
     a = handle_update({"update_id": 962, "message": {"chat": group, "from": admin, "text": "/quote", "message_id": 91}}, state, dry_run=True)
     check11("admin command is not deleted", not any(x.get("type") == "delete" and x.get("message_id") == 91 for x in a))
     print(f"phase 11 checks: {len(fails)} failures")
+    if fails:
+        print("FAILED: " + "; ".join(fails))
+        return 1
+
+    # Phase 12 (Bilingual) tests.
+    fails = []
+    def check12(label, cond):
+        print(("PASS " if cond else "FAIL ") + label)
+        if not cond:
+            fails.append(label)
+    check12("khmer help exists and is long", len(HELP_TEXT_KH) > 4000 and "ស្វាគមន៍" in HELP_TEXT_KH)
+    check12("khmer help covers the main sections", all(k in HELP_TEXT_KH for k in ("សម្រង់", "ល្បែង", "អំណាចក្រុម", "សហព័ន្ធ", "Premium")))
+    # /language shows EN and Khmer buttons.
+    a = handle_update({"update_id": 971, "message": {"chat": dm, "from": player, "text": "/language"}}, state, dry_run=True)
+    check12("language shows both buttons", any(x.get("type") == "text" and x.get("keyboard") and "lang:en" in str(x.get("keyboard")) and "lang:kh" in str(x.get("keyboard")) for x in a))
+    # Tapping Khmer switches the user to Khmer.
+    a = handle_update({"update_id": 972, "callback_query": {"id": "cb12", "from": player, "data": "lang:kh", "message": {"chat": dm, "message_id": 95}}}, state, dry_run=True)
+    check12("lang tap sets Khmer", user_lang(state, 777) == "kh")
+    check12("lang tap confirms in Khmer", any("ភាសាខ្មែរ" in t for t in texts(a)))
+    # /help now answers in Khmer for a Khmer user.
+    a = handle_update({"update_id": 973, "message": {"chat": dm, "from": player, "text": "/help"}}, state, dry_run=True)
+    check12("help answers in Khmer", any("ស្វាគមន៍មកកាន់ Daily News" in t for t in texts(a)))
+    # /start greets in Khmer.
+    a = handle_update({"update_id": 974, "message": {"chat": dm, "from": player, "text": "/start"}}, state, dry_run=True)
+    check12("start greets in Khmer", any("សួស្តី" in t for t in texts(a)))
+    # The Khmer menu buttons work like the English ones.
+    a = handle_update({"update_id": 975, "message": {"chat": dm, "from": player, "text": "💬 សម្រង់"}}, state, dry_run=True)
+    check12("khmer quote tap works", len(texts(a)) == 1 and texts(a)[0] in DAILY_QUOTES + KHMER_QUOTES)
+    a = handle_update({"update_id": 976, "message": {"chat": dm, "from": player, "text": "ℹ️ ជំនួយ"}}, state, dry_run=True)
+    check12("khmer help tap shows khmer help", any("ស្វាគមន៍មកកាន់ Daily News" in t for t in texts(a)))
+    # /rank and /mystats answer in Khmer.
+    a = handle_update({"update_id": 977, "message": {"chat": dm, "from": player, "text": "/rank"}}, state, dry_run=True)
+    check12("rank answers in Khmer", any("កម្រិត" in t for t in texts(a)))
+    a = handle_update({"update_id": 978, "message": {"chat": dm, "from": player, "text": "/mystats"}}, state, dry_run=True)
+    check12("mystats answers in Khmer", any("ស្ថិតិរបស់អ្នក" in t for t in texts(a)))
+    # /checkin answers in Khmer.
+    a = handle_update({"update_id": 979, "message": {"chat": dm, "from": player, "text": "/checkin"}}, state, dry_run=True)
+    check12("checkin answers in Khmer", any("check-in" in t or "Streak" in t for t in texts(a)))
+    # Switching back to English restores English replies.
+    a = handle_update({"update_id": 980, "callback_query": {"id": "cb13", "from": player, "data": "lang:en", "message": {"chat": dm, "message_id": 96}}}, state, dry_run=True)
+    check12("lang tap back sets English", user_lang(state, 777) == "en")
+    a = handle_update({"update_id": 981, "message": {"chat": dm, "from": player, "text": "/help"}}, state, dry_run=True)
+    check12("help answers in English again", any("Welcome to Daily News" in t for t in texts(a)))
+    print(f"phase 12 checks: {len(fails)} failures")
     if fails:
         print("FAILED: " + "; ".join(fails))
         return 1
