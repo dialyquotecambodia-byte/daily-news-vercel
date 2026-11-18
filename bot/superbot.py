@@ -370,6 +370,10 @@ HELP_TEXT = (
     "/digest — your personal daily digest\n\n"
     "Smart & safe\n"
     "/ask — ask me anything, now answered by real AI when I don't know\n"
+    "/summarize — reply to a message and I will sum it up in 3 bullets\n"
+    "/aiquiz <topic> — a fresh AI quiz question, on any topic\n"
+    "/afk <reason> — tell everyone you are away, I will answer for you\n"
+    "/autodel on — delete command messages after I reply (groups)\n"
     "/check — reply to a message, AI says if it's spam, scam, abuse or harmless\n"
     "/aimod on — AI checks link messages from non-admins and deletes the bad ones\n"
     "/setlog @Channel — log bans, mutes, warns, fbans and purges there\n"
@@ -600,6 +604,8 @@ def load_state():
     state.setdefault("custom_credits", {})
     state.setdefault("shop_revenue", {"stars": 0, "sales": 0})
     state.setdefault("sponsored_posts", [])
+    state.setdefault("afk", {})
+    state.setdefault("ai_history", {})
     state.setdefault("scheduled_posts", [])
     state.setdefault("giveaways", {})
     state.setdefault("users", {})
@@ -665,8 +671,10 @@ def track_user(state, message, command=""):
     if not uid or uid == str(GROUP_ANONYMOUS_BOT_ID):
         return None
     users = state.setdefault("users", {})
-    record = users.setdefault(uid, {"name": user.get("first_name", "friend"), "messages": 0, "quotes": 0, "quizzes": 0, "first_seen": int(time.time()), "last_seen": int(time.time()), "last_command": "", "favourite": "", "lang": "en"})
+    record = users.setdefault(uid, {"name": user.get("first_name", "friend"), "messages": 0, "quotes": 0, "quizzes": 0, "first_seen": int(time.time()), "last_seen": int(time.time()), "last_command": "", "favourite": "", "lang": "en", "username": user.get("username", "")})
     record["name"] = user.get("first_name", record["name"])
+    if user.get("username"):
+        record["username"] = user.get("username")
     record["messages"] += 1
     record["last_seen"] = int(time.time())
     if command:
@@ -697,7 +705,7 @@ def get_group_settings(state, chat_id):
          "captcha": False, "reports": True, "blacklist_words": [], "blacklist_mode": "delete",
          "blacklist_stickers": [], "notes": {}, "filters": {}, "aimod": False,
          "locks": {}, "approved": [], "disabled": [], "flood_limit": 5, "goodbye": "", "fsub": "",
-         "antiraid": False, "cleanservice": False, "antichannel": False},
+         "antiraid": False, "cleanservice": False, "antichannel": False, "autodel": False},
     )
     settings.setdefault("welcome", "")
     settings.setdefault("rules", "")
@@ -721,6 +729,7 @@ def get_group_settings(state, chat_id):
     settings.setdefault("antiraid", False)
     settings.setdefault("cleanservice", False)
     settings.setdefault("antichannel", False)
+    settings.setdefault("autodel", False)
     return settings
 
 
@@ -1338,6 +1347,9 @@ BOT_COMMANDS = [
     ("poll", "Make a poll"),
     ("score", "Quiz scores"),
     ("ask", "Ask me a question"),
+    ("summarize", "Summarize a replied message"),
+    ("aiquiz", "A fresh AI quiz question"),
+    ("afk", "Set yourself away from keyboard"),
     ("stats", "Bot stats"),
     ("mystats", "Your stats"),
     ("top", "Top quiz players"),
@@ -1375,14 +1387,11 @@ BOT_COMMANDS = [
     ("leaderboard", "Top players"),
     ("tournament", "Start a trivia tournament"),
     ("endtournament", "End the tournament"),
-    ("digest", "Your personal daily digest"),
     ("aimod", "AI moderation on/off"),
-    ("check", "AI check on a message"),
     ("setlog", "Set the moderation log channel"),
     ("backup", "Back up group settings"),
     ("restore", "Restore group settings"),
     ("referral", "Invite friends, earn XP"),
-    ("topreferrers", "Top inviters"),
     ("premium", "Premium with Telegram Stars"),
     ("shop", "Stars shop: XP Boost, custom images, Premium"),
     ("customquote", "Turn your words into a quote image"),
@@ -1660,6 +1669,7 @@ def settings_keyboard(gid, settings):
         [{"text": f"🛡️ Anti-raid: {tick(settings.get('antiraid'))}", "callback_data": f"set:{gid}:antiraid"}],
         [{"text": f"🧹 Clean service: {tick(settings.get('cleanservice'))}", "callback_data": f"set:{gid}:cleanservice"}],
         [{"text": f"📺 Anti-channel: {tick(settings.get('antichannel'))}", "callback_data": f"set:{gid}:antichannel"}],
+        [{"text": f"🗑️ Auto-delete commands: {tick(settings.get('autodel'))}", "callback_data": f"set:{gid}:autodel"}],
         [{"text": f"🚫 Blacklist: {settings.get('blacklist_mode', 'delete')}", "callback_data": f"set:{gid}:blacklist_mode"}],
         [{"text": "❌ Close", "callback_data": f"set:{gid}:close"}],
     ]}
@@ -1676,6 +1686,7 @@ def settings_text(gid, settings):
         f"🛡️ Anti-raid: {'on' if settings.get('antiraid') else 'off'} — mutes newcomers during a join flood",
         f"🧹 Clean service: {'on' if settings.get('cleanservice') else 'off'} — deletes join/leave notices",
         f"📺 Anti-channel: {'on' if settings.get('antichannel') else 'off'} — deletes messages sent as a channel",
+        f"🗑️ Auto-delete commands: {'on' if settings.get('autodel') else 'off'} — deletes command messages after the bot replies",
         f"🚫 Blacklist mode: {settings.get('blacklist_mode', 'delete')} — what happens on a blacklisted word",
         f"📝 Notes: {len(settings.get('notes', {}))} saved",
         f"🔤 Filters: {len(settings.get('filters', {}))} saved",
@@ -1811,23 +1822,29 @@ def tournament_standings(t):
     return "\n".join(f"{i + 1}. {p['name']}: {p['score']} point(s)" for i, p in enumerate(players))
 
 
-def ai_chat(prompt, dry_run=False):
+def ai_chat(prompt, dry_run=False, history=None):
     """Ask a real AI model. In dry-run (tests) returns a canned reply, no network.
     Live: if OPENAI_API_KEY is set, use an OpenAI-compatible chat API
     (OPENAI_BASE_URL, default https://api.openai.com/v1); otherwise use the
-    free Pollinations text API (no key needed). Returns the answer text or None."""
+    free Pollinations text API (no key needed). `history` is a short list of
+    {"role": "user"/"assistant", "content": ...} turns for conversation memory.
+    Returns the answer text or None."""
     if dry_run:
         return "[test AI reply in Khmer]" if prompt.startswith("Reply in Khmer") else "[test AI reply]"
     if not prompt or not prompt.strip():
         return None
+    history = history or []
     key = os.environ.get("OPENAI_API_KEY", "").strip()
     if key:
         try:
             base = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
             model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+            messages = [{"role": "system", "content": "You are Daily News, a helpful Telegram bot. Keep replies short and friendly."}]
+            messages += [{"role": h.get("role", "user"), "content": h.get("content", "")[:1000]} for h in history[-6:]]
+            messages.append({"role": "user", "content": prompt[:2000]})
             req = urllib.request.Request(
                 base + "/chat/completions",
-                data=json.dumps({"model": model, "messages": [{"role": "user", "content": prompt[:2000]}]}).encode(),
+                data=json.dumps({"model": model, "messages": messages}).encode(),
                 headers={"Content-Type": "application/json", "Authorization": "Bearer " + key},
                 method="POST",
             )
@@ -1838,7 +1855,11 @@ def ai_chat(prompt, dry_run=False):
             print(f"openai chat failed: {e}", flush=True)
             return None
     try:
-        url = "https://text.pollinations.ai/" + urllib.parse.quote(prompt[:2000])
+        full = prompt[:2000]
+        if history:
+            transcript = "\n".join(f"{'User' if h.get('role') == 'user' else 'Assistant'}: {h.get('content', '')[:500]}" for h in history[-6:])
+            full = f"Conversation so far:\n{transcript}\nUser: {prompt}\nAssistant:"
+        url = "https://text.pollinations.ai/" + urllib.parse.quote(full[:2000])
         req = urllib.request.Request(url, headers={"Accept": "text/plain"})
         with urllib.request.urlopen(req, timeout=20) as resp:
             text = resp.read().decode(errors="replace").strip()
@@ -1890,11 +1911,16 @@ def send_scheduled():
 
 
 def ai_reply(state, uid, prompt, dry_run=False):
-    """Ask the AI in the user's preferred language (Khmer if they asked for it)."""
+    """Ask the AI in the user's preferred language (Khmer if they asked for it).
+    Remembers the last 3 exchanges per user so the AI can follow up."""
     lang = (state.get("users", {}).get(str(uid), {}) or {}).get("lang", "en")
-    if lang == "kh":
-        prompt = "Reply in Khmer language. " + prompt
-    return ai_chat(prompt, dry_run=dry_run)
+    full_prompt = ("Reply in Khmer language. " + prompt) if lang == "kh" else prompt
+    history = state.setdefault("ai_history", {}).get(str(uid), [])
+    answer = ai_chat(full_prompt, dry_run=dry_run, history=history)
+    if answer:
+        history = history + [{"role": "user", "content": prompt[:500]}, {"role": "assistant", "content": answer[:500]}]
+        state.setdefault("ai_history", {})[str(uid)] = history[-6:]
+    return answer
 
 
 def ai_moderate(text, dry_run=False):
@@ -2092,7 +2118,7 @@ def handle_update(update, state, dry_run=False):
                     actions.append({"type": "edit", "chat_id": chat_id, "message_id": msg_id, "text": "Settings closed. Send /settings to open them again."})
             else:
                 settings = get_group_settings(state, gid)
-                if key in ("antilink", "antispam", "captcha", "reports", "antiraid", "cleanservice", "antichannel"):
+                if key in ("antilink", "antispam", "captcha", "reports", "antiraid", "cleanservice", "antichannel", "autodel"):
                     settings[key] = not settings.get(key, False)
                 elif key == "blacklist_mode":
                     modes = ["delete", "warn", "mute"]
@@ -2313,6 +2339,27 @@ def handle_update(update, state, dry_run=False):
         command = command.split("@")[0]
     args = text[len(first_word):].strip()
     lower = text.lower()
+
+    # AFK: coming back clears it (except the /afk command itself).
+    if command != "/afk" and str(sender_id) in state.get("afk", {}):
+        rec = state["afk"].pop(str(sender_id))
+        mins = max(1, (int(time.time()) - rec.get("since", int(time.time()))) // 60)
+        actions.append({"type": "text", "chat_id": chat_id, "text": f"👋 Welcome back, {rec.get('name', 'friend')}! You were AFK for {mins} min."})
+    # AFK: if this message replies to or mentions an AFK user, say so.
+    _afk_targets = set()
+    _rtm = message.get("reply_to_message") or {}
+    _rf = _rtm.get("from") or {}
+    if _rf.get("id"):
+        _afk_targets.add(str(_rf.get("id")))
+    for _m in re.findall(r"@(\w+)", text):
+        for _uid, _rec in state.get("users", {}).items():
+            if (_rec.get("username") or "").lower() == _m.lower():
+                _afk_targets.add(_uid)
+    for _uid in _afk_targets:
+        _rec = state.get("afk", {}).get(_uid)
+        if _rec and _uid != str(sender_id):
+            reason = _rec.get("reason", "")
+            actions.append({"type": "text", "chat_id": chat_id, "text": f"💤 {_rec.get('name', 'friend')} is AFK" + (f": {reason}" if reason else ".")})
 
     # Disabled commands (Rose-style): deleted in groups, admins bypass.
     if chat_type in ("group", "supergroup") and command.startswith("/"):
@@ -3032,7 +3079,7 @@ def handle_update(update, state, dry_run=False):
                 reply("That doesn't look like a backup — I need the JSON from /backup.")
             else:
                 settings = get_group_settings(state, admin_chat)
-                allowed = ("welcome", "rules", "antilink", "antispam", "captcha", "reports", "blacklist_words", "blacklist_mode", "blacklist_stickers", "notes", "filters", "aimod", "locks", "approved", "disabled", "flood_limit", "goodbye", "fsub", "antiraid", "cleanservice", "antichannel")
+                allowed = ("welcome", "rules", "antilink", "antispam", "captcha", "reports", "blacklist_words", "blacklist_mode", "blacklist_stickers", "notes", "filters", "aimod", "locks", "approved", "disabled", "flood_limit", "goodbye", "fsub", "antiraid", "cleanservice", "antichannel", "autodel")
                 restored = [k for k in allowed if k in data]
                 for k in restored:
                     settings[k] = data[k]
@@ -3348,7 +3395,7 @@ def handle_update(update, state, dry_run=False):
                 channel = "@" + channel
             get_group_settings(state, admin_chat)["fsub"] = channel
             reply(f"Force-subscribe is on for {channel}. Non-members' messages will be removed until they join.")
-    elif command in ("/antiraid", "/cleanservice", "/antichannel"):
+    elif command in ("/antiraid", "/cleanservice", "/antichannel", "/autodel"):
         if chat_type not in ("group", "supergroup") and not connected_group:
             reply("Use this in a group (or connect to one with /connect).")
         elif not is_admin(admin_chat, sender_id, dry_run=dry_run, sender_chat_id=_schat):
@@ -3472,6 +3519,40 @@ def handle_update(update, state, dry_run=False):
                 reply(ai if ai else answer)
             else:
                 reply(answer)
+    elif command == "/summarize":
+        target = ""
+        replied = message.get("reply_to_message") or {}
+        if replied.get("text"):
+            target = replied.get("text", "")
+        elif args.strip():
+            target = args.strip()
+        if not target:
+            reply("Reply to a message with /summarize, or send /summarize <text>, and I'll sum it up in 3 bullets.")
+        else:
+            ans = ai_chat(f"Summarize this in 3 short bullets:\n\n{target[:1500]}", dry_run=dry_run)
+            reply(f"📝 Summary:\n{ans}" if ans else "I couldn't summarize that right now — try again in a bit.")
+    elif command == "/aiquiz":
+        topic = args.strip() or "general knowledge"
+        raw = ai_chat(f"Write one quiz question about {topic}. Reply with ONLY a JSON object like {{\"q\": \"...\", \"options\": [\"...\", \"...\", \"...\", \"...\"], \"correct\": 0, \"explain\": \"...\"}}. The correct index is 0-3.", dry_run=dry_run)
+        q = None
+        if raw:
+            try:
+                q = json.loads(raw[raw.index("{"):raw.rindex("}") + 1])
+            except Exception:
+                q = None
+        if not q or not isinstance(q, dict) or not q.get("q") or len(q.get("options", [])) != 4 or not isinstance(q.get("correct"), int) or not 0 <= q["correct"] <= 3:
+            q = random.choice(QUIZ_QUESTIONS)
+        actions.append({"type": "quiz", "chat_id": chat_id, "question": {"q": q["q"], "options": q["options"], "correct": q["correct"], "explain": q.get("explain", "")}})
+    elif command == "/afk":
+        if args.strip().lower() in ("off", "no", "false"):
+            if str(sender_id) in state.get("afk", {}):
+                state["afk"].pop(str(sender_id), None)
+                reply("You're back — AFK cleared.")
+            else:
+                reply("You weren't AFK.")
+        else:
+            state.setdefault("afk", {})[str(sender_id)] = {"reason": args.strip(), "since": int(time.time()), "name": sender.get("first_name", "friend")}
+            reply(f"💤 You're now AFK" + (f": {args.strip()}" if args.strip() else ".") + " I'll let people know. Send any message to come back.")
     elif command == "/stats":
         stats = state.get("stats", {})
         users = state.get("users", {})
@@ -3609,9 +3690,10 @@ def handle_update(update, state, dry_run=False):
             user_record["lang"] = "en"
         reply("Sure! I'll reply in English from now on. Ask me anything!")
     else:
-        # Private chat: talk with the AI instead of the canned thanks message.
-        # Groups keep the short thanks reply so the bot doesn't chatter there.
-        ai = ai_reply(state, sender_id, text, dry_run=dry_run) if chat_type == "private" else None
+        # Groups: answer when the bot is mentioned or replied to; private chats always talk with the AI.
+        mentioned = "@musevishnu_bot" in lower or (message.get("reply_to_message") or {}).get("from", {}).get("id") == BOT_ID
+        prompt = re.sub(r"@MuseVishnu_bot", "", text, flags=re.IGNORECASE).strip() if mentioned else text
+        ai = ai_reply(state, sender_id, prompt, dry_run=dry_run) if (chat_type == "private" or mentioned) else None
         if ai:
             reply(ai)
         elif user_record and user_record.get("messages", 0) > 3:
@@ -3620,6 +3702,9 @@ def handle_update(update, state, dry_run=False):
             reply("Thanks for your message! Send /quote for a quote, /quoteimg for a picture, /quiz for a game, /ask to ask me something, or /help to see everything I can do.")
     if msg_leveled:
         actions.append({"type": "text", "chat_id": chat_id, "text": f"🎉 LEVEL UP! You are now Level {msg_leveled}! Keep chatting and playing to earn more XP."})
+    # Auto-delete command messages in groups when autodel is on (non-admin commands only).
+    if chat_type in ("group", "supergroup") and text.startswith("/") and get_group_settings(state, chat_id).get("autodel") and not is_admin(chat_id, sender_id, dry_run=dry_run, sender_chat_id=_schat):
+        actions.append({"type": "delete", "chat_id": chat_id, "message_id": message.get("message_id")})
     return actions
 
 
@@ -4552,6 +4637,63 @@ def run_tests():
     a = handle_update({"update_id": 940, "message": {"chat": dm, "from": owner_user, "text": "/analytics"}}, state, dry_run=True)
     check10("analytics shows shop sales", any("Shop:" in t and "80 Stars" in t for t in texts(a)))
     print(f"phase 10 checks: {len(fails)} failures")
+    if fails:
+        print("FAILED: " + "; ".join(fails))
+        return 1
+
+    # Phase 11 (Smart Pack) tests.
+    fails = []
+    def check11(label, cond):
+        print(("PASS " if cond else "FAIL ") + label)
+        if not cond:
+            fails.append(label)
+    # AI remembers the last exchanges.
+    before = len(state.get("ai_history", {}).get("777", []))
+    ai_reply(state, 777, "What is the capital of Cambodia?", dry_run=True)
+    ai_reply(state, 777, "And its largest temple?", dry_run=True)
+    hist = state.get("ai_history", {}).get("777", [])
+    check11("AI history grows by 2 exchanges", len(hist) == min(6, before + 4) and hist[-4].get("content") == "What is the capital of Cambodia?")
+    check11("AI history caps at 6 turns", len(hist) <= 6)
+    # AI answers in a group when mentioned.
+    a = handle_update({"update_id": 951, "message": {"chat": group, "from": {"id": 222, "first_name": "Spammer"}, "text": "@MuseVishnu_bot explain quantum computing in one sentence"}}, state, dry_run=True)
+    check11("AI answers a group mention", any("[test AI reply]" in t for t in texts(a)))
+    # AI answers in a group when replying to the bot.
+    a = handle_update({"update_id": 952, "message": {"chat": group, "from": {"id": 222, "first_name": "Spammer"}, "text": "and the largest temple?", "reply_to_message": {"from": {"id": 9085916191, "first_name": "MuseVishnu"}, "text": "Phnom Penh is the capital."}}}, state, dry_run=True)
+    check11("AI answers a reply to the bot", any("[test AI reply]" in t for t in texts(a)))
+    # A plain group message still gets the thanks reply, not the AI.
+    a = handle_update({"update_id": 953, "message": {"chat": group, "from": {"id": 222, "first_name": "Spammer"}, "text": "hello everyone"}}, state, dry_run=True)
+    check11("plain group message is not AI-answered", not any("[test AI reply]" in t for t in texts(a)))
+    # /summarize on a replied message.
+    a = handle_update({"update_id": 954, "message": {"chat": dm, "from": player, "text": "/summarize", "reply_to_message": {"from": {"id": 222, "first_name": "Spammer"}, "text": "A very long message about many things that happened today in the city."}}}, state, dry_run=True)
+    check11("summarize replies with a summary", any("Summary:" in t for t in texts(a)))
+    # /aiquiz parses AI JSON (fake ai_chat here) and falls back cleanly otherwise.
+    _real_ai = ai_chat
+    def _fake_ai(prompt, dry_run=False, history=None):
+        return '{"q": "What is 2 + 2?", "options": ["3", "4", "5", "6"], "correct": 1, "explain": "2 + 2 = 4."}'
+    globals()["ai_chat"] = _fake_ai
+    try:
+        a = handle_update({"update_id": 955, "message": {"chat": dm, "from": player, "text": "/aiquiz maths"}}, state, dry_run=True)
+        check11("aiquiz uses the AI question", any(x.get("type") == "quiz" and x.get("question", {}).get("q") == "What is 2 + 2?" for x in a))
+    finally:
+        globals()["ai_chat"] = _real_ai
+    a = handle_update({"update_id": 956, "message": {"chat": dm, "from": player, "text": "/aiquiz"}}, state, dry_run=True)
+    check11("aiquiz falls back to a normal question", any(x.get("type") == "quiz" and x.get("question") in QUIZ_QUESTIONS for x in a))
+    # /afk sets, announces on reply, and clears on return.
+    a = handle_update({"update_id": 957, "message": {"chat": group, "from": player, "text": "/afk eating lunch"}}, state, dry_run=True)
+    check11("afk sets with a reason", state.get("afk", {}).get("777", {}).get("reason") == "eating lunch")
+    a = handle_update({"update_id": 958, "message": {"chat": group, "from": {"id": 222, "first_name": "Spammer"}, "text": "where is Player?", "reply_to_message": {"from": player, "text": "hello"}}}, state, dry_run=True)
+    check11("replying to an AFK user announces it", any("is AFK" in t and "eating lunch" in t for t in texts(a)))
+    a = handle_update({"update_id": 959, "message": {"chat": group, "from": player, "text": "I'm back"}}, state, dry_run=True)
+    check11("AFK clears when the user returns", "777" not in state.get("afk", {}))
+    check11("welcome back is sent", any("Welcome back" in t for t in texts(a)))
+    # /autodel deletes a non-admin command message in a group.
+    handle_update({"update_id": 960, "message": {"chat": group, "from": admin, "text": "/autodel on"}}, state, dry_run=True)
+    check11("autodel turns on", state.get("group_settings", {}).get("-100123", {}).get("autodel") is True)
+    a = handle_update({"update_id": 961, "message": {"chat": group, "from": {"id": 222, "first_name": "Spammer"}, "text": "/quote", "message_id": 90}}, state, dry_run=True)
+    check11("non-admin command is deleted", any(x.get("type") == "delete" and x.get("message_id") == 90 for x in a))
+    a = handle_update({"update_id": 962, "message": {"chat": group, "from": admin, "text": "/quote", "message_id": 91}}, state, dry_run=True)
+    check11("admin command is not deleted", not any(x.get("type") == "delete" and x.get("message_id") == 91 for x in a))
+    print(f"phase 11 checks: {len(fails)} failures")
     if fails:
         print("FAILED: " + "; ".join(fails))
         return 1
