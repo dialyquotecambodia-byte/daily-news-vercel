@@ -1,0 +1,1 @@
+{"$schema":"https://openapi.vercel.sh/vercel.json","crons":[{"path":"/api/cron-morning","schedule":"42 1 * * *"},{"path":"/api/cron-evening","schedule":"42 11 * * *"}],"functions":{"api/cron-evening.py":{"maxDuration":60},"api/cron-morning.py":{"maxDuration":60},"api/post-news.py":{"maxDuration":60},"api/webhook.py":{"maxDuration":60}}}

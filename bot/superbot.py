@@ -1,0 +1,2204 @@
+#!/usr/bin/env python3
+"""All-in-one Telegram super bot for @MuseVishnu_bot.
+
+Vercel edition (vendored from the live VM bot, 2026-11-18):
+- Token comes from the TELEGRAM_BOT_TOKEN environment variable.
+- State lives in Vercel KV (Upstash REST) when STATE_BACKEND=kv,
+  or in a local state.json file when STATE_BACKEND=file.
+- Fonts are vendored in bot/fonts/ so quote images render on Vercel.
+- Webhook mode: Vercel calls api/webhook.py once per update; there
+  is no polling loop in production. The CLI modes (--daily,
+  --evening, --story, --post-news, --setup-menu, --setup-channel,
+  --test) still work locally and from the VM crons.
+
+Step 1 quote images: /quoteimg, /loveimg, /friendimg send a 1080x1080
+quote image with sendPhoto.
+Step 2 channel auto-post: /setchannel, /channel, /postquote. The daily
+sender also posts to the channel when one is set.
+Step 3 games and polls: /quiz sends a quiz poll and tracks scores,
+/poll <question> | <option1> | <option2> makes a poll, /score shows scores.
+Step 4 reminders and smarter chat: /remind <10m|1h> <text>, /reminders,
+/joke, /motivate, inline buttons on /start, and intent replies.
+
+Commands:
+  /start, /help, /about, /quote, /love, /friend, /khmer, /quoteimg, /loveimg, /friendimg, /khmerimg
+  /daily, /stopdaily, /time, /echo, /rules, /info
+  /setchannel, /channel, /postquote [love|friend|motivate|daily]
+  /quiz, /poll, /score
+  /remind, /reminders, /joke, /motivate
+  /ask, /stats, /mystats, /top
+
+Professional branding: Daily Quote, channel @dailynewsreporter.
+Morning daily quote 8:42am, evening love quote 6pm.
+
+Run:
+  python3 superbot.py            # poll forever
+  python3 superbot.py --daily    # send one daily quote to subscribers and channel, then exit
+  python3 superbot.py --evening  # send one evening love quote to the channel, then exit
+  python3 superbot.py --test     # dry-run fake updates, no API calls
+
+State lives in Vercel KV (STATE_BACKEND=kv) or ./state.json (STATE_BACKEND=file).
+"""
+import argparse
+import ast
+import base64
+import datetime
+import json
+import operator
+import os
+import random
+import re
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.request
+import uuid
+
+# --- Vercel hosting: configuration -------------------------------------------
+# Project root is the parent of bot/ (this file lives in bot/superbot.py).
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# File backend path (local testing). Override with the STATE_PATH env var.
+STATE_PATH = os.environ.get("STATE_PATH") or os.path.join(BASE_DIR, "state.json")
+HEARTBEAT_PATH = os.path.join(BASE_DIR, "heartbeat.json")
+# Fonts are vendored in bot/fonts/ so image rendering works on Vercel,
+# where the VM's /usr/share/fonts paths do not exist.
+FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
+# State backend: "file" (local state.json) or "kv" (Vercel KV / Upstash REST).
+STATE_BACKEND = os.environ.get("STATE_BACKEND", "file").strip().lower()
+KV_STATE_KEY = os.environ.get("KV_STATE_KEY", "state")
+
+
+def read_json_response(response):
+    return json.loads(response.read().decode("utf-8"))
+
+
+def get_token():
+    """Bot token from the environment. Never from a file or a credential helper."""
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    if not token:
+        raise RuntimeError("TELEGRAM_BOT_TOKEN is not set")
+    return token
+
+
+_FONT_CACHE = {}
+
+
+def font_file(name):
+    """First existing copy of a font: vendored fonts/ first, then system fonts.
+
+    The repo stores fonts as base64 text (bot/fonts/*.ttf.b64) because the
+    GitHub push path only accepts UTF-8 text. When no .ttf file exists, the
+    matching .b64 file is decoded once into the temp dir and that copy is used.
+    """
+    if name in _FONT_CACHE:
+        return _FONT_CACHE[name]
+    candidates = [
+        os.path.join(FONT_DIR, name),
+        f"/usr/share/fonts/truetype/dejavu/{name}",
+        f"/usr/share/fonts/truetype/noto/{name}",
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            _FONT_CACHE[name] = path
+            return path
+    b64_path = os.path.join(FONT_DIR, name + ".b64")
+    if os.path.exists(b64_path):
+        cache_dir = os.path.join(tempfile.gettempdir(), "daily-news-fonts")
+        os.makedirs(cache_dir, exist_ok=True)
+        out = os.path.join(cache_dir, name)
+        if not os.path.exists(out):
+            with open(b64_path, "rb") as f:
+                data = base64.b64decode(f.read())
+            with open(out, "wb") as f:
+                f.write(data)
+        _FONT_CACHE[name] = out
+        return out
+    return candidates[0]
+
+
+def write_heartbeat(state):
+    try:
+        data = {
+            "pid": os.getpid(),
+            "time": int(time.time()),
+            "time_iso": phnom_penh_now().isoformat(),
+            "offset": state.get("offset", 0),
+            "subscribers": len(state.get("subscribers", [])),
+        }
+        tmp = HEARTBEAT_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp, HEARTBEAT_PATH)
+    except Exception as e:
+        print(f"heartbeat write failed: {e}", flush=True)
+
+LOVE_QUOTES = [
+    "Love isn't about finding someone perfect, it's about choosing each other, every day.",
+    "The best kind of love is the one that feels like friendship, and the best kind of friendship feels like love.",
+    "Distance means nothing when someone means everything.",
+    "Love is not what you say, it's what you do, every day, in the small things.",
+    "A true love stays, even when it's hard to.",
+    "Love grows when you water it with patience, honesty and time.",
+    "The right person will make you feel calm, not confused.",
+    "Love is not about how many days you have been together, it is about how much you care each day.",
+    "A loving heart is the truest kind of wisdom.",
+    "You don't find love, you build it, one kind day at a time.",
+    "Home is not a place. It is a person who makes you feel safe.",
+    "Real love listens, even when the words are hard to hear.",
+    "Love makes ordinary days feel like something special.",
+    "The best love is the one that makes you a better person.",
+    "To love someone is to see all of them, and choose them anyway.",
+]
+FRIEND_QUOTES = [
+    "A true friend doesn't just stand beside you in the good times, they stay when it's hard to.",
+    "Friends are the family we get to choose, and the home we find in each other.",
+    "A real friend is someone who knows you and still likes you.",
+    "Friendship is the quiet kind of love that never asks for anything back.",
+    "Good friends make hard days lighter and good days brighter.",
+    "A friend is someone who knows the song in your heart and can sing it back when you forget the words.",
+    "True friends are never apart, maybe in distance but never in heart.",
+    "A friend who understands your tears is worth more than many friends who only know your smile.",
+    "Good friends are like stars. You don't always see them, but you know they are always there.",
+    "Friendship is born when one person says to another: What! You too? I thought I was the only one.",
+    "A loyal friend laughs at your jokes even when they are not so good, and sympathises with your problems even when they are not so bad.",
+    "Friends show their love in times of trouble, not in happiness.",
+    "A single rose can be my garden, a single friend my world.",
+    "There is nothing on this earth more to be prized than true friendship.",
+    "A friend is one who overlooks your broken fence and admires the flowers in your garden.",
+]
+DAILY_QUOTES = LOVE_QUOTES + FRIEND_QUOTES + [
+    "Today is a new page. Write something kind on it.",
+    "Small steps every day are still steps forward.",
+    "Be the reason someone smiles today.",
+    "You don't have to be perfect to be loved, and you don't have to be loud to be heard.",
+    "Start where you are. Use what you have. Do what you can.",
+    "The sun will rise again tomorrow, and so will you.",
+    "Do one thing today that your future self will thank you for.",
+    "Kindness is free. Sprinkle it everywhere.",
+    "Every day is a chance to begin again.",
+    "You are capable of more than you know.",
+    "Believe in yourself, even when no one else does.",
+    "A little progress each day adds up to big results.",
+    "Choose joy, even on the hard days.",
+    "Your only limit is the story you tell yourself.",
+    "Today, be the light someone else needs.",
+]
+KHMER_QUOTES = [
+    "សេចក្តីស្រឡាញ់ពិត មិនមែនជាការស្វែងរកមនុស្សល្អឥតខ្ចោះទេ គឺជាការជ្រើសរើសគ្នាទៅវិញទៅមកជារៀងរាល់ថ្ងៃ។",
+    "មិត្តពិត គឺជាគ្រួសារដែលយើងជ្រើសរើសដោយខ្លួនឯង។",
+    "ថ្ងៃនេះជាទំព័រថ្មី។ សរសេរអ្វីដែលល្អនៅលើវា។",
+    "ជំហានតូចៗរាល់ថ្ងៃ ក៏នៅតែជាជំហានទៅមុខដែរ។",
+    "អ្នកខ្លាំងជាងអ្វីដែលអ្នកគិត។",
+    "ភាពសប្បុរសគឺឥតគិតថ្លៃ។ ចែករំលែកវាគ្រប់ទីកន្លែង។",
+    "មិត្តល្អធ្វើឲ្យថ្ងៃលំបាកកាន់តែស្រាល និងថ្ងៃល្អកាន់តែភ្លឺ។",
+    "ចាប់ផ្តើមពីកន្លែងដែលអ្នកនៅ។ ប្រើអ្វីដែលអ្នកមាន។ ធ្វើអ្វីដែលអ្នកអាចធ្វើបាន។",
+]
+JOKES = [
+    "Why did the scarecrow win an award? Because he was outstanding in his field.",
+    "I told my computer I needed a break, and now it won't stop sending me KitKat ads.",
+    "Why don't scientists trust atoms? Because they make up everything.",
+    "What do you call a fish without eyes? A fsh.",
+]
+MOTIVATION = [
+    "You are stronger than you think, and today is proof you kept going.",
+    "Don't wait for the perfect moment. Take this moment and make it perfect.",
+    "One kind word can change someone's whole day. Start with yours.",
+]
+QUIZ_QUESTIONS = [
+    {"q": "What is the capital of Cambodia?", "options": ["Phnom Penh", "Siem Reap", "Battambang", "Kampot"], "correct": 0, "explain": "Phnom Penh is the capital of Cambodia."},
+    {"q": "Which planet is known as the Red Planet?", "options": ["Venus", "Mars", "Jupiter", "Saturn"], "correct": 1, "explain": "Mars is the Red Planet."},
+    {"q": "How many days are there in a leap year?", "options": ["365", "366", "364", "360"], "correct": 1, "explain": "A leap year has 366 days."},
+    {"q": "What is 7 x 8?", "options": ["54", "56", "48", "64"], "correct": 1, "explain": "7 x 8 = 56."},
+    {"q": "Which animal is known as man's best friend?", "options": ["Cat", "Horse", "Dog", "Parrot"], "correct": 2, "explain": "Dogs are known as man's best friend."},
+    {"q": "What does AI stand for?", "options": ["Automatic Internet", "Artificial Intelligence", "Advanced Information", "Auto Intelligence"], "correct": 1, "explain": "AI stands for Artificial Intelligence."},
+    {"q": "Which company makes ChatGPT?", "options": ["Google", "Meta", "OpenAI", "Microsoft"], "correct": 2, "explain": "ChatGPT is made by OpenAI."},
+    {"q": "What is the largest temple complex in the world, in Cambodia?", "options": ["Angkor Wat", "Bayon", "Ta Prohm", "Banteay Srei"], "correct": 0, "explain": "Angkor Wat is the largest religious monument in the world."},
+    {"q": "How many minutes are in one hour?", "options": ["30", "60", "90", "100"], "correct": 1, "explain": "There are 60 minutes in one hour."},
+    {"q": "What is the main language of Cambodia?", "options": ["Thai", "Vietnamese", "Khmer", "Lao"], "correct": 2, "explain": "Khmer is the official language of Cambodia."},
+    {"q": "Which planet is closest to the Sun?", "options": ["Venus", "Earth", "Mercury", "Mars"], "correct": 2, "explain": "Mercury is closest to the Sun."},
+    {"q": "What does www stand for?", "options": ["World Wide Web", "World Web Wide", "Wide World Web", "Web World Wide"], "correct": 0, "explain": "WWW stands for World Wide Web."},
+    {"q": "Which of these is a free AI chatbot?", "options": ["ChatGPT Free", "A paid-only app", "A printer", "A calculator"], "correct": 0, "explain": "ChatGPT has a free tier."},
+    {"q": "What is 15 + 15?", "options": ["25", "30", "35", "20"], "correct": 1, "explain": "15 + 15 = 30."},
+    {"q": "Which river flows through Phnom Penh?", "options": ["Mekong", "Nile", "Amazon", "Danube"], "correct": 0, "explain": "The Mekong River flows through Phnom Penh."},
+    {"q": "What is the capital of France?", "options": ["London", "Paris", "Berlin", "Madrid"], "correct": 1, "explain": "Paris is the capital of France."},
+    {"q": "How many continents are there on Earth?", "options": ["5", "6", "7", "8"], "correct": 2, "explain": "There are 7 continents."},
+    {"q": "What is the largest ocean on Earth?", "options": ["Pacific", "Atlantic", "Indian", "Arctic"], "correct": 0, "explain": "The Pacific is the largest ocean."},
+    {"q": "Which gas do plants absorb from the air?", "options": ["Carbon dioxide", "Oxygen", "Nitrogen", "Hydrogen"], "correct": 0, "explain": "Plants absorb carbon dioxide."},
+    {"q": "What is 9 x 9?", "options": ["72", "81", "99", "90"], "correct": 1, "explain": "9 x 9 = 81."},
+    {"q": "Which instrument has 88 keys?", "options": ["Piano", "Guitar", "Violin", "Drum"], "correct": 0, "explain": "A piano has 88 keys."},
+    {"q": "What is the chemical symbol for water?", "options": ["H2O", "CO2", "O2", "NaCl"], "correct": 0, "explain": "Water is H2O."},
+    {"q": "How many legs does a spider have?", "options": ["6", "8", "10", "4"], "correct": 1, "explain": "A spider has 8 legs."},
+    {"q": "What is the fastest land animal?", "options": ["Cheetah", "Lion", "Horse", "Gazelle"], "correct": 0, "explain": "The cheetah is the fastest land animal."},
+    {"q": "Which country is home to the kangaroo?", "options": ["Australia", "India", "Brazil", "Kenya"], "correct": 0, "explain": "Kangaroos are from Australia."},
+    {"q": "What is 100 divided by 4?", "options": ["20", "25", "30", "40"], "correct": 1, "explain": "100 / 4 = 25."},
+    {"q": "What colour do you get mixing blue and yellow?", "options": ["Green", "Purple", "Orange", "Brown"], "correct": 0, "explain": "Blue + yellow = green."},
+    {"q": "Which planet is famous for its rings?", "options": ["Saturn", "Mars", "Venus", "Mercury"], "correct": 0, "explain": "Saturn is famous for its rings."},
+    {"q": "What is the main ingredient in guacamole?", "options": ["Avocado", "Tomato", "Onion", "Pepper"], "correct": 0, "explain": "Guacamole is made from avocado."},
+    {"q": "How many seconds are in a minute?", "options": ["30", "60", "90", "120"], "correct": 1, "explain": "There are 60 seconds in a minute."},
+]
+
+SCRAMBLE_WORDS = [
+    "telegram", "computer", "banana", "elephant", "rainbow", "guitar",
+    "pizza", "monkey", "rocket", "flower", "dragon", "cheese",
+    "mountain", "jungle", "pencil", "turtle", "castle", "pirate",
+    "cookie", "garden",
+]
+
+RPS_CHOICES = ["rock", "paper", "scissors"]
+RPS_EMOJI = {"rock": "🪨 Rock", "paper": "📄 Paper", "scissors": "✂️ Scissors"}
+
+BRAND = "Daily Quote"
+CHANNEL_HANDLE = "@dailynewsreporter"
+
+HELP_TEXT = (
+    "Welcome to Daily News — tech, AI and daily quotes.\n\n"
+    "I'm @MuseVishnu_bot, the official bot for @dailynewsreporter.\n\n"
+    "Tech & AI news\n"
+    "/news — how to get AI and tech news here\n"
+    "/ainews — latest AI model updates\n"
+    "/models — AI models, what changed and who can use them\n"
+    "/freeai — free AI tools you can use today\n"
+    "/invite — free AI invite and referral codes we have shared\n"
+    "/addinvite <service> <code> — owner only, add a code to share\n\n"
+    "Quotes\n"
+    "/quote — a daily quote\n"
+    "/love — a love quote\n"
+    "/friend — a friendship quote\n"
+    "/khmer — a quote in Khmer\n"
+    "/quoteimg — a quote as a shareable image\n"
+    "/loveimg — a love quote as an image\n"
+    "/friendimg — a friendship quote as an image\n"
+    "/khmerimg — a Khmer quote as a shareable image\n"
+    "/story — today's story image, ready to post\n"
+    "/addquote <text> — owner only, add a quote to the library\n"
+    "/daily — get a quote every morning at 8:42am\n"
+    "/stopdaily — stop daily quotes\n\n"
+    "Schedule\n"
+    "/schedule — when the channel posts, every day\n\n"
+    "Channel\n"
+    "/channel — our channel, @dailynewsreporter\n"
+    "/postquote — post a quote to the channel now\n"
+    "/postnews <title> | <summary> | <source> — owner only, post news to the channel\n\n"
+    "Games & fun\n"
+    "/quiz — a quiz question (30 questions!)\n"
+    "/guess — guess my number, 1 to 100\n"
+    "/rps — rock, paper, scissors\n"
+    "/dice — roll a dice 🎲\n"
+    "/darts — throw a dart 🎯\n"
+    "/bowling — bowl a strike 🎳\n"
+    "/basketball — shoot a hoop 🏀\n"
+    "/football — kick a goal ⚽\n"
+    "/slots — spin the slot machine 🎰\n"
+    "/scramble — unscramble the word\n"
+    "/poll Question | Yes | No — make a poll\n"
+    "/score — quiz scores\n"
+    "/joke — a joke\n"
+    "/motivate — motivation\n\n"
+    "Smart chat & stats\n"
+    "/ask <question> — ask me anything, e.g. /ask 12+8\n"
+    "/stats — how the bot is doing\n"
+    "/mystats — your messages, quotes and quiz score\n"
+    "/top — top quiz players and most active chatters\n\n"
+    "Tools\n"
+    "/remind 10m drink water — remind you later\n"
+    "/reminders — list your reminders\n"
+    "/menu — show the quick menu buttons\n"
+    "/hidemenu — hide the quick menu\n"
+    "/time — current time in Phnom Penh\n"
+    "/about — about Daily News\n"
+    "/rules — group rules\n"
+    "/info — info about this chat\n\n"
+    "Group admin (admins only, bot must be admin too): /admins, /ban, /unban, /kick, /mute, /unmute, /warn, /warns, /pin, /unpin, /del, /lock, /unlock, /setwelcome, /setrules, /antilink, /antispam"
+    "\n\nInline: type @MuseVishnu_bot in any chat to send a quote, the Mini App or the channel."
+)
+
+ABOUT_TEXT = (
+    "Daily News — @dailynewsreporter\n\n"
+    "Tech news, AI information, AI model updates, free AI tools and free invite codes — plus a daily quote.\n\n"
+    "What you get here:\n"
+    "• AI and tech news, researched and posted to the channel\n"
+    "• A new quote every morning at 8:42am\n"
+    "• A love quote every evening at about 6:42pm\n"
+    "• Free AI tools in /freeai, and invite codes in /invite\n"
+    "• Quizzes, polls and reminders from @MuseVishnu_bot\n\n"
+    "Follow the channel: @dailynewsreporter\n"
+    "Talk to the bot: @MuseVishnu_bot\n"
+    "Send /daily to get the morning quote in your own chat."
+)
+
+SCHEDULE_TEXT = (
+    "Daily News — posting schedule, Asia/Phnom_Penh\n\n"
+    "08:42 — Morning quote\n"
+    "12:42 — AI & tech news, 2-3 researched items\n"
+    "18:42 — Evening love quote\n\n"
+    "Plus, anytime: free AI tools, invite codes, quizzes and polls.\n"
+    "Follow: @dailynewsreporter\n"
+    "Bot: @MuseVishnu_bot"
+)
+
+WELCOME_POST_TEXT = (
+    "Welcome to Daily News\n"
+    "@dailynewsreporter\n\n"
+    "Tech news, AI information, AI model updates, free AI tools and free invite codes — plus a daily quote.\n\n"
+    "What you will get here:\n"
+    "08:42 — Morning quote\n"
+    "12:42 — AI & tech news\n"
+    "18:42 — Evening love quote\n\n"
+    "Commands in the bot @MuseVishnu_bot:\n"
+    "/news — AI & tech news\n"
+    "/freeai — free AI tools\n"
+    "/invite — free invite codes\n"
+    "/quote — a daily quote\n"
+    "/khmer — a quote in Khmer\n"
+    "/quiz — play a quiz\n\n"
+    "Share this channel with a friend who loves tech and AI.\n"
+    "#DailyNews #AINews #TechNews"
+)
+
+CHANNEL_DESCRIPTION = (
+    "📰 Daily News — Tech, AI & Quotes\n"
+    "🤖 AI model updates, free AI tools & invite codes\n"
+    "💬 Quote 08:42 • AI news 12:42 • Love quote 18:42\n"
+    "Bot: @MuseVishnu_bot"
+)
+
+BOT_SHORT_DESCRIPTION = "Daily News bot — tech, AI, free AI tools, invite codes and a daily quote. Try /news /freeai /invite /quote"
+
+BOT_DESCRIPTION = (
+    "Welcome to Daily News — @dailynewsreporter\n\n"
+    "Tech news, AI model updates, free AI tools, free invite codes and a daily quote.\n\n"
+    "/news — AI & tech news\n"
+    "/freeai — free AI tools\n"
+    "/invite — free invite codes\n"
+    "/quote — a daily quote\n"
+    "/khmer — a quote in Khmer\n"
+    "/quiz — play a quiz\n"
+    "/schedule — posting times\n\n"
+    "Channel: @dailynewsreporter"
+)
+
+FREE_AI_TEXT = (
+    "Free AI tools you can use today — checked November 2026, limits change often, so check the vendor page before you rely on one:\n\n"
+    "• ChatGPT Free — unlimited everyday text chats, with limits on uploads, images and voice.\n"
+    "• Gemini Free — chat, Deep Research, Gemini Live, image generation, 15 GB storage. Usage refreshes about every 5 hours, up to a weekly limit.\n"
+    "• Claude Free — Sonnet and Haiku, with web search, files and voice. Limited every 5 hours and every week.\n"
+    "• DeepSeek — free chatbot, no paid tier listed.\n"
+    "• Perplexity Free — unlimited basic searches with linked sources, 3 Pro searches a day.\n"
+    "• Muse — Meta's personal AI agent, free with usage limits. In the US, Canada and Japan you can join at muse.ai. Referral codes can give 1 billion bonus tokens — see /invite.\n\n"
+    "Free is for everyday and learning use, not for confidential or client data."
+)
+
+MODELS_TEXT = (
+    "AI model updates — November 2026, as reported by the vendors and roundups. Prices and access change fast:\n\n"
+    "• OpenAI GPT-6.2 Astra and GPT-6.2 Sol — reported released 17 Nov 2026, via API and ChatGPT Work. Sol is the more efficient one, reported at about 80% less than Astra.\n"
+    "• Alibaba Qwen4-Max — reported released 17 Nov 2026, 1 million token context, multimodal.\n"
+    "• Anthropic Claude Fable 5.2 — released 9 Nov 2026, $8 in / $40 out per million tokens, 1M context.\n"
+    "• Google Gemini 4 Carbon — generally available 10 Nov 2026, $2 / $10 per million tokens until 30 Nov, then $4 / $20.\n"
+    "• Google Gemini 4 Hydrogen — generally available 12 Nov 2026, $1.50 / $7.50, with a free tier.\n"
+    "• OpenAI GPT-6 Cyber — 5 Nov 2026, for approved security teams only.\n\n"
+    "Ask me in this chat for the latest, and I will check before I answer."
+)
+
+NEWS_TEXT = (
+    "AI and tech news — @dailynewsreporter\n\n"
+    "I research the latest AI and tech news and post it to the channel, with the source named. You will see:\n"
+    "• New AI model releases and price changes\n"
+    "• Free AI tools and new features\n"
+    "• Free invite and referral codes, when we have a real one to share\n\n"
+    "Commands:\n"
+    "/ainews — latest AI model updates\n"
+    "/models — AI models, what changed and who can use them\n"
+    "/freeai — free AI tools you can use today\n"
+    "/invite — free AI invite codes we have shared\n\n"
+    "News is researched by Muse before it is posted — the bot itself does not browse the web."
+)
+
+
+OWNER_ID = 5039926430
+
+
+def news_caption(title, summary, source=""):
+    now = phnom_penh_now()
+    date_str = now.strftime("%A, %d %B %Y")
+    out = f"Daily News — Tech & AI\n{date_str}\n\n{title}\n\n{summary}\n"
+    if source:
+        out += f"\nSource: {source}\n"
+    out += "\n#TechNews #AINews #DailyNews\nFollow: @dailynewsreporter\nBot: @MuseVishnu_bot"
+    return out
+
+
+def channel_caption(quote, kind="daily"):
+    now = phnom_penh_now()
+    date_str = now.strftime("%A, %d %B %Y")
+    titles = {"daily": "Good morning — Daily Quote", "love": "Good evening — Love Quote", "friend": "Friendship Quote", "motivate": "Motivation"}
+    tags = {"daily": "#DailyQuote #Motivation", "love": "#DailyQuote #Love", "friend": "#DailyQuote #Friendship", "motivate": "#DailyQuote #Motivation"}
+    title = titles.get(kind, "Daily Quote")
+    tag = tags.get(kind, "#DailyQuote")
+    return f"{title}\n{date_str}\n\n{quote}\n\n{tag}\nFollow: @dailynewsreporter\nBot: @MuseVishnu_bot"
+
+RULES_TEXT = (
+    "Group rules:\n"
+    "1. Be kind to everyone here.\n"
+    "2. No spam, no ads, no links without permission.\n"
+    "3. Keep it friendly, love and friendship first.\n"
+    "4. Use /quote for a daily dose of kindness."
+)
+
+
+def _kv_get_state():
+    """Whole state as one JSON string under KV_STATE_KEY (Upstash REST API)."""
+    url = os.environ.get("KV_REST_API_URL", "").rstrip("/")
+    token = os.environ.get("KV_REST_API_TOKEN", "")
+    if not url or not token:
+        raise RuntimeError("KV_REST_API_URL and KV_REST_API_TOKEN are required for STATE_BACKEND=kv")
+    request = urllib.request.Request(
+        f"{url}/get/{KV_STATE_KEY}",
+        headers={"Authorization": f"Bearer {token}"},
+        method="GET",
+    )
+    with urllib.request.build_opener(NoRedirect()).open(request, timeout=15) as response:
+        raw = read_json_response(response).get("result")
+    if not raw:
+        return {}
+    return json.loads(raw)
+
+
+def _kv_set_state(state):
+    """Write the whole state with one pipeline call (keeps the large JSON value out of the URL)."""
+    url = os.environ.get("KV_REST_API_URL", "").rstrip("/")
+    token = os.environ.get("KV_REST_API_TOKEN", "")
+    if not url or not token:
+        raise RuntimeError("KV_REST_API_URL and KV_REST_API_TOKEN are required for STATE_BACKEND=kv")
+    payload = json.dumps([["SET", KV_STATE_KEY, json.dumps(state)]]).encode("utf-8")
+    request = urllib.request.Request(
+        f"{url}/pipeline", data=payload, method="POST",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+    )
+    with urllib.request.build_opener(NoRedirect()).open(request, timeout=15) as response:
+        results = read_json_response(response).get("result") or []
+    if not results or results[0].get("result") != "OK":
+        raise RuntimeError(f"KV state write failed: {results}")
+
+
+def load_state():
+    if STATE_BACKEND == "kv":
+        # A KV failure must be loud: falling back to an empty state here
+        # would let the next save overwrite the real state with nothing.
+        state = _kv_get_state()
+    else:
+        try:
+            with open(STATE_PATH, encoding="utf-8") as f:
+                state = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            state = {}
+    state.setdefault("offset", 0)
+    state.setdefault("subscribers", [])
+    state.setdefault("last_daily", "")
+    state.setdefault("last_evening", "")
+    state.setdefault("channel_id", "")
+    state.setdefault("reminders", [])
+    state.setdefault("scores", {})
+    state.setdefault("quiz_polls", {})
+    state.setdefault("group_settings", {})
+    state.setdefault("users", {})
+    state.setdefault("questions", [])
+    state.setdefault("invite_codes", [])
+    state.setdefault("custom_quotes", [])
+    state.setdefault("stats", {"messages": 0, "commands": {}, "quotes_sent": 0, "photos_sent": 0, "quizzes_sent": 0, "started": int(time.time())})
+    state["stats"].setdefault("messages", 0)
+    state["stats"].setdefault("commands", {})
+    state["stats"].setdefault("quotes_sent", 0)
+    state["stats"].setdefault("photos_sent", 0)
+    state["stats"].setdefault("quizzes_sent", 0)
+    state["stats"].setdefault("started", int(time.time()))
+    return state
+
+
+KNOWLEDGE = {
+    "capital of cambodia": "The capital of Cambodia is Phnom Penh.",
+    "capital of thailand": "The capital of Thailand is Bangkok.",
+    "capital of vietnam": "The capital of Vietnam is Hanoi.",
+    "capital of france": "The capital of France is Paris.",
+    "capital of japan": "The capital of Japan is Tokyo.",
+    "who are you": "I'm MuseVishnu, a Telegram bot made for love, friendship and daily quotes. Try /help to see what I can do.",
+    "what is your name": "My name is MuseVishnu, and my username is @MuseVishnu_bot.",
+    "how old are you": "I was born on 18 November 2026, when Dailyquote connected me. So I'm brand new.",
+    "what is love": "Love is choosing someone every day, in the small things, not just the big moments.",
+    "what is friendship": "Friendship is the quiet kind of love that never asks for anything back.",
+}
+
+
+def safe_math(expr):
+    """Evaluate a simple math expression safely, or return None."""
+    expr = expr.strip()
+    if not re.fullmatch(r"[0-9\s\.\+\-\*\/\(\)\%]+", expr):
+        return None
+    try:
+        tree = ast.parse(expr, mode="eval")
+    except Exception:
+        return None
+    ops = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul, ast.Div: operator.truediv, ast.Mod: operator.mod, ast.USub: operator.neg, ast.UAdd: operator.pos}
+    def eval_node(node):
+        if isinstance(node, ast.Expression):
+            return eval_node(node.body)
+        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+            return node.value
+        if isinstance(node, ast.BinOp) and type(node.op) in ops:
+            return ops[type(node.op)](eval_node(node.left), eval_node(node.right))
+        if isinstance(node, ast.UnaryOp) and type(node.op) in ops:
+            return ops[type(node.op)](eval_node(node.operand))
+        raise ValueError("unsupported")
+    try:
+        result = eval_node(tree)
+    except Exception:
+        return None
+    if isinstance(result, float) and result.is_integer():
+        result = int(result)
+    return result
+
+
+def track_user(state, message, command=""):
+    user = message.get("from") or {}
+    uid = str(user.get("id", ""))
+    if not uid:
+        return None
+    users = state.setdefault("users", {})
+    record = users.setdefault(uid, {"name": user.get("first_name", "friend"), "messages": 0, "quotes": 0, "quizzes": 0, "first_seen": int(time.time()), "last_seen": int(time.time()), "last_command": "", "favourite": ""})
+    record["name"] = user.get("first_name", record["name"])
+    record["messages"] += 1
+    record["last_seen"] = int(time.time())
+    if command:
+        record["last_command"] = command
+        if command in ("/quote", "/love", "/friend", "/khmer"):
+            record["quotes"] += 1
+            record["favourite"] = command
+        if command == "/quiz":
+            record["quizzes"] += 1
+    stats = state.setdefault("stats", {})
+    stats["messages"] = stats.get("messages", 0) + 1
+    if command.startswith("/"):
+        cmds = stats.setdefault("commands", {})
+        cmds[command] = cmds.get(command, 0) + 1
+    if command in ("/quote", "/love", "/friend", "/khmer", "/quoteimg", "/loveimg", "/friendimg", "/khmerimg"):
+        stats["quotes_sent"] = stats.get("quotes_sent", 0) + 1
+    if command in ("/quoteimg", "/loveimg", "/friendimg", "/khmerimg"):
+        stats["photos_sent"] = stats.get("photos_sent", 0) + 1
+    if command == "/quiz":
+        stats["quizzes_sent"] = stats.get("quizzes_sent", 0) + 1
+    return record
+
+
+def get_group_settings(state, chat_id):
+    settings = state.setdefault("group_settings", {}).setdefault(
+        str(chat_id),
+        {"welcome": "", "rules": "", "antilink": False, "antispam": True, "warnings": {}},
+    )
+    settings.setdefault("welcome", "")
+    settings.setdefault("rules", "")
+    settings.setdefault("antilink", False)
+    settings.setdefault("antispam", True)
+    settings.setdefault("warnings", {})
+    return settings
+
+
+def is_admin(chat_id, user_id, dry_run=False):
+    if dry_run:
+        # In tests, user 111 is the group admin, everyone else is not.
+        return user_id == 111
+    if not user_id:
+        return False
+    try:
+        result = api_call("getChatAdministrators", {"chat_id": chat_id})
+    except Exception:
+        return False
+    for admin in result.get("result", []):
+        if (admin.get("user") or {}).get("id") == user_id:
+            return True
+    return False
+
+
+def target_user(message, args):
+    """Target for an admin command: replied message first, then an id in args."""
+    replied = message.get("reply_to_message") or {}
+    sender = replied.get("from") or {}
+    if sender.get("id"):
+        return sender.get("id"), sender.get("first_name", "that member")
+    parts = args.split(None, 1)
+    if parts and parts[0].lstrip("-").isdigit():
+        return int(parts[0]), parts[0]
+    return None, None
+
+
+# Flood tracking, in memory only: (chat_id, user_id) -> [timestamps]
+FLOOD_TRACKER = {}
+
+
+def save_state(state):
+    if STATE_BACKEND == "kv":
+        _kv_set_state(state)
+        return
+    tmp = STATE_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(state, f, indent=2)
+    os.replace(tmp, STATE_PATH)
+
+
+def api_url(method):
+    return f"https://api.telegram.org/bot{get_token()}/{method}"
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args):
+        raise RuntimeError("redirect refused, verify the endpoint")
+
+
+def api_call(method, payload=None, timeout=35):
+    data = None
+    headers = {}
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(
+        api_url(method), data=data, headers=headers,
+        method="POST" if payload is not None else "GET",
+    )
+    with urllib.request.build_opener(NoRedirect()).open(request, timeout=timeout) as response:
+        return read_json_response(response)
+
+
+def send_message(chat_id, text, reply_markup=None):
+    payload = {"chat_id": chat_id, "text": text}
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+    result = api_call("sendMessage", payload)
+    print(f"sent to {chat_id}: {text[:60]!r} ok={result.get('ok')}", flush=True)
+    return result
+
+
+def send_photo(chat_id, path, caption=""):
+    boundary = "----musebot" + uuid.uuid4().hex
+    body = b""
+    body += f"--{boundary}\r\n".encode()
+    body += b'Content-Disposition: form-data; name="chat_id"\r\n\r\n'
+    body += str(chat_id).encode() + b"\r\n"
+    if caption:
+        body += f"--{boundary}\r\n".encode()
+        body += b'Content-Disposition: form-data; name="caption"\r\n\r\n'
+        body += caption.encode() + b"\r\n"
+    with open(path, "rb") as f:
+        data = f.read()
+    body += f"--{boundary}\r\n".encode()
+    body += b'Content-Disposition: form-data; name="photo"; filename="quote.png"\r\n'
+    body += b"Content-Type: image/png\r\n\r\n"
+    body += data + b"\r\n"
+    body += f"--{boundary}--\r\n".encode()
+    request = urllib.request.Request(
+        api_url("sendPhoto"), data=body,
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        method="POST",
+    )
+    with urllib.request.build_opener(NoRedirect()).open(request, timeout=60) as response:
+        result = read_json_response(response)
+    print(f"sent photo to {chat_id} ok={result.get('ok')}", flush=True)
+    return result
+
+
+def send_poll(chat_id, question, options, is_quiz=False, correct=None, explanation=None):
+    payload = {
+        "chat_id": chat_id, "question": question, "options": options,
+        "is_anonymous": False, "allows_multiple_answers": False,
+    }
+    if is_quiz:
+        payload["type"] = "quiz"
+        payload["correct_option_id"] = correct
+        if explanation:
+            payload["explanation"] = explanation
+    result = api_call("sendPoll", payload)
+    print(f"sent poll to {chat_id} ok={result.get('ok')}", flush=True)
+    return result
+
+
+def phnom_penh_now():
+    tz = datetime.timezone(datetime.timedelta(hours=7))
+    return datetime.datetime.now(tz)
+
+
+_RECENT_QUOTES = []
+
+
+def pick_quote(kind="any", state=None):
+    if kind == "love":
+        pool = list(LOVE_QUOTES)
+    elif kind == "friend":
+        pool = list(FRIEND_QUOTES)
+    elif kind == "khmer":
+        pool = list(KHMER_QUOTES)
+    else:
+        pool = list(DAILY_QUOTES)
+    if state:
+        pool.extend(state.get("custom_quotes", []))
+    # No repeats: avoid the last 5 quotes sent in this process
+    fresh = [q for q in pool if q not in _RECENT_QUOTES]
+    chosen = random.choice(fresh if fresh else pool)
+    _RECENT_QUOTES.append(chosen)
+    del _RECENT_QUOTES[:-5]
+    return chosen
+
+
+def scramble_word(word):
+    letters = list(word)
+    for _ in range(20):
+        random.shuffle(letters)
+        scrambled = "".join(letters)
+        if scrambled != word:
+            return scrambled
+    return "".join(letters)
+
+
+def rps_result(player, bot):
+    if player == bot:
+        return "draw"
+    wins = {"rock": "scissors", "paper": "rock", "scissors": "paper"}
+    return "win" if wins[player] == bot else "lose"
+
+
+def make_quote_image(quote, kind="daily"):
+    from PIL import Image, ImageDraw, ImageFont
+    size = 1080
+    img = Image.new("RGB", (size, size))
+    draw = ImageDraw.Draw(img)
+    # Professional gradient: deep navy to teal
+    top = (16, 24, 64)
+    bottom = (14, 90, 110)
+    for y in range(size):
+        r = top[0] + (bottom[0] - top[0]) * y // size
+        g = top[1] + (bottom[1] - top[1]) * y // size
+        b = top[2] + (bottom[2] - top[2]) * y // size
+        draw.line([(0, y), (size, y)], fill=(r, g, b))
+    try:
+        font_big = ImageFont.truetype(font_file("DejaVuSans-Bold.ttf"), 64)
+        font_header = ImageFont.truetype(font_file("DejaVuSans-Bold.ttf"), 40)
+        font_text = ImageFont.truetype(font_file("DejaVuSans.ttf"), 52)
+        font_small = ImageFont.truetype(font_file("DejaVuSans.ttf"), 34)
+    except Exception:
+        font_big = ImageFont.load_default()
+        font_header = ImageFont.load_default()
+        font_text = ImageFont.load_default()
+        font_small = ImageFont.load_default()
+    # Khmer needs Noto Sans Khmer: DejaVu has no Khmer glyphs (U+1780-U+17FF)
+    # and renders Khmer as boxes. Pillow here has raqm, so shaping works.
+    if any(0x1780 <= ord(c) <= 0x17FF for c in quote):
+        try:
+            font_text = ImageFont.truetype(font_file("NotoSansKhmer-Regular.ttf"), 48)
+        except Exception:
+            pass
+    # Header, centred, with a gold rule underneath
+    header = "DAILY QUOTE"
+    bbox = draw.textbbox((0, 0), header, font=font_header)
+    draw.text(((size - (bbox[2] - bbox[0])) // 2, 80), header, fill=(255, 215, 130), font=font_header)
+    draw.line([(340, 150), (740, 150)], fill=(255, 215, 130), width=3)
+    draw.text((80, 180), "\u201c", fill=(255, 255, 255), font=font_big)
+    # Wrap and centre the quote text
+    words = quote.split()
+    lines = []
+    line = ""
+    for word in words:
+        test = (line + " " + word).strip()
+        bbox = draw.textbbox((0, 0), test, font=font_text)
+        if bbox[2] - bbox[0] > 860:
+            lines.append(line)
+            line = word
+        else:
+            line = test
+    if line:
+        lines.append(line)
+    total_h = len(lines) * 78
+    y = max(300, (size - total_h) // 2)
+    for line_text in lines:
+        bbox = draw.textbbox((0, 0), line_text, font=font_text)
+        x = (size - (bbox[2] - bbox[0])) // 2
+        draw.text((x, y), line_text, fill=(255, 255, 255), font=font_text)
+        y += 78
+    date_str = phnom_penh_now().strftime("%d %B %Y")
+    footer = f"{date_str}  •  @dailynewsreporter"
+    bbox = draw.textbbox((0, 0), footer, font=font_small)
+    draw.text(((size - (bbox[2] - bbox[0])) // 2, 920), footer, fill=(200, 225, 240), font=font_small)
+    bot_line = "@MuseVishnu_bot"
+    bbox = draw.textbbox((0, 0), bot_line, font=font_small)
+    draw.text(((size - (bbox[2] - bbox[0])) // 2, 965), bot_line, fill=(255, 215, 130), font=font_small)
+    path = f"/tmp/quote_{uuid.uuid4().hex[:8]}.png"
+    img.save(path)
+    return path
+
+
+def make_story_image(quote):
+    """Vertical 1080x1920 story image with the daily quote, same navy/gold branding."""
+    from PIL import Image, ImageDraw, ImageFont
+    w, h = 1080, 1920
+    img = Image.new("RGB", (w, h))
+    draw = ImageDraw.Draw(img)
+    top = (16, 24, 64)
+    bottom = (14, 90, 110)
+    for y in range(h):
+        r = top[0] + (bottom[0] - top[0]) * y // h
+        g = top[1] + (bottom[1] - top[1]) * y // h
+        b = top[2] + (bottom[2] - top[2]) * y // h
+        draw.line([(0, y), (w, y)], fill=(r, g, b))
+    try:
+        font_big = ImageFont.truetype(font_file("DejaVuSans-Bold.ttf"), 120)
+        font_header = ImageFont.truetype(font_file("DejaVuSans-Bold.ttf"), 52)
+        font_text = ImageFont.truetype(font_file("DejaVuSans.ttf"), 72)
+        font_small = ImageFont.truetype(font_file("DejaVuSans.ttf"), 44)
+    except Exception:
+        font_big = ImageFont.load_default()
+        font_header = ImageFont.load_default()
+        font_text = ImageFont.load_default()
+        font_small = ImageFont.load_default()
+    if any(0x1780 <= ord(c) <= 0x17FF for c in quote):
+        try:
+            font_text = ImageFont.truetype(font_file("NotoSansKhmer-Regular.ttf"), 64)
+        except Exception:
+            pass
+    header = "DAILY NEWS"
+    bbox = draw.textbbox((0, 0), header, font=font_header)
+    draw.text(((w - (bbox[2] - bbox[0])) // 2, 180), header, fill=(255, 215, 130), font=font_header)
+    draw.line([(390, 270), (690, 270)], fill=(255, 215, 130), width=4)
+    draw.text((90, 340), "\u201c", fill=(255, 255, 255), font=font_big)
+    words = quote.split()
+    lines = []
+    line = ""
+    for word in words:
+        test = (line + " " + word).strip()
+        bbox = draw.textbbox((0, 0), test, font=font_text)
+        if bbox[2] - bbox[0] > 860:
+            lines.append(line)
+            line = word
+        else:
+            line = test
+    if line:
+        lines.append(line)
+    total_h = len(lines) * 108
+    y = max(560, (h - total_h) // 2)
+    for line_text in lines:
+        bbox = draw.textbbox((0, 0), line_text, font=font_text)
+        x = (w - (bbox[2] - bbox[0])) // 2
+        draw.text((x, y), line_text, fill=(255, 255, 255), font=font_text)
+        y += 108
+    date_str = phnom_penh_now().strftime("%d %B %Y")
+    footer = f"{date_str}  •  @dailynewsreporter"
+    bbox = draw.textbbox((0, 0), footer, font=font_small)
+    draw.text(((w - (bbox[2] - bbox[0])) // 2, 1620), footer, fill=(200, 225, 240), font=font_small)
+    bot_line = "@MuseVishnu_bot"
+    bbox = draw.textbbox((0, 0), bot_line, font=font_small)
+    draw.text(((w - (bbox[2] - bbox[0])) // 2, 1680), bot_line, fill=(255, 215, 130), font=font_small)
+    path = f"/tmp/story_{uuid.uuid4().hex[:8]}.png"
+    img.save(path)
+    return path
+
+
+def post_story(chat_id, path, caption=""):
+    """Post a photo story. BUSINESS ACCOUNTS ONLY: postStory needs a
+    business_connection_id and the can_manage_stories business right.
+    It does NOT post stories to a channel — verified 2026-11-18, a regular
+    bot gets "business connection not found" even as a channel admin with
+    can_post_stories. Kept here for a future business-account setup.
+    Content is an InputStoryContentPhoto via attach://, the same pattern
+    as setMyProfilePhoto."""
+    boundary = "----musebot" + uuid.uuid4().hex
+    content = json.dumps({"type": "photo", "photo": "attach://story.png"})
+    with open(path, "rb") as f:
+        data = f.read()
+    body = b""
+    body += f"--{boundary}\r\n".encode()
+    body += b'Content-Disposition: form-data; name="chat_id"\r\n\r\n' + str(chat_id).encode() + b"\r\n"
+    body += f"--{boundary}\r\n".encode()
+    body += b'Content-Disposition: form-data; name="active_period"\r\n\r\n86400\r\n'
+    if caption:
+        body += f"--{boundary}\r\n".encode()
+        body += b'Content-Disposition: form-data; name="caption"\r\n\r\n' + caption.encode()[:200] + b"\r\n"
+    body += f"--{boundary}\r\n".encode()
+    body += b'Content-Disposition: form-data; name="content"\r\n\r\n' + content.encode() + b"\r\n"
+    body += f"--{boundary}\r\n".encode()
+    body += b'Content-Disposition: form-data; name="story.png"; filename="story.png"\r\nContent-Type: image/png\r\n\r\n'
+    body += data + b"\r\n"
+    body += f"--{boundary}--\r\n".encode()
+    request = urllib.request.Request(
+        api_url("postStory"), data=body,
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        method="POST",
+    )
+    with urllib.request.build_opener(NoRedirect()).open(request, timeout=60) as response:
+        result = read_json_response(response)
+    print(f"posted story to {chat_id} ok={result.get('ok')}", flush=True)
+    return result
+
+
+def send_story():
+    """Daily story, as far as the Bot API allows. Verified 2026-11-18:
+    postStory requires a business_connection_id and the can_manage_stories
+    business right — a regular bot cannot post a story to a channel, even
+    with can_post_stories admin rights ("business connection not found").
+    So this makes the vertical 1080x1920 story image each morning and sends
+    it to the owner, ready to post as the channel's story in two taps:
+    open @dailynewsreporter, Post Story, pick this image."""
+    state = load_state()
+    today = phnom_penh_now().strftime("%Y-%m-%d")
+    if state.get("last_story") == today:
+        print(f"story already prepared for {today}", flush=True)
+        return 0
+    quote = pick_quote("any", state)
+    path = make_story_image(quote)
+    caption = (
+        "📸 Your Daily News story for today — ready to post.\n\n"
+        "Open @dailynewsreporter → Post Story → pick this image.\n"
+        f"Quote: {quote}"
+    )
+    try:
+        result = send_photo(OWNER_ID, path, caption=caption)
+        if not result.get("ok"):
+            print(f"story delivery failed: {result}", flush=True)
+            return 0
+        sent = 1
+    except Exception as e:
+        print(f"story delivery failed: {e}", flush=True)
+        return 0
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    state["last_story"] = today
+    save_state(state)
+    return sent
+
+
+def make_channel_banner():
+    from PIL import Image, ImageDraw, ImageFont
+    size = 1080
+    img = Image.new("RGB", (size, size))
+    draw = ImageDraw.Draw(img)
+    top = (16, 24, 64)
+    bottom = (14, 90, 110)
+    for y in range(size):
+        r = top[0] + (bottom[0] - top[0]) * y // size
+        g = top[1] + (bottom[1] - top[1]) * y // size
+        b = top[2] + (bottom[2] - top[2]) * y // size
+        draw.line([(0, y), (size, y)], fill=(r, g, b))
+    try:
+        font_title = ImageFont.truetype(font_file("DejaVuSans-Bold.ttf"), 110)
+        font_sub = ImageFont.truetype(font_file("DejaVuSans.ttf"), 44)
+        font_small = ImageFont.truetype(font_file("DejaVuSans.ttf"), 38)
+        font_gold = ImageFont.truetype(font_file("DejaVuSans-Bold.ttf"), 40)
+    except Exception:
+        font_title = ImageFont.load_default()
+        font_sub = ImageFont.load_default()
+        font_small = ImageFont.load_default()
+        font_gold = ImageFont.load_default()
+    def centre(text, y, font, fill):
+        bbox = draw.textbbox((0, 0), text, font=font)
+        draw.text(((size - (bbox[2] - bbox[0])) // 2, y), text, fill=fill, font=font)
+    centre("DAILY NEWS", 260, font_title, (255, 255, 255))
+    draw.line([(290, 400), (790, 400)], fill=(255, 215, 130), width=4)
+    centre("Tech  •  AI  •  Free AI  •  Quotes", 440, font_sub, (200, 225, 240))
+    centre("08:42  Morning quote", 560, font_small, (255, 255, 255))
+    centre("12:42  AI & tech news", 620, font_small, (255, 255, 255))
+    centre("18:42  Evening love quote", 680, font_small, (255, 255, 255))
+    centre("@dailynewsreporter", 820, font_gold, (255, 215, 130))
+    centre("@MuseVishnu_bot", 880, font_small, (200, 225, 240))
+    path = f"/tmp/banner_{uuid.uuid4().hex[:8]}.png"
+    img.save(path)
+    return path
+
+
+def set_channel_info(photo_path=None):
+    """Auto-fill the channel via the Bot API. The bot must be an admin with can_change_info, which @MuseVishnu_bot is in @dailynewsreporter."""
+    state = load_state()
+    channel = state.get("channel_id")
+    if not channel:
+        print("no channel set", flush=True)
+        return False
+    def _set(method, payload):
+        # Telegram returns HTTP 400 "not modified" when the value is already
+        # what we set; that means the fill is already done, not a failure.
+        try:
+            return api_call(method, payload).get("ok")
+        except Exception as e:
+            body = ""
+            if hasattr(e, "read"):
+                try:
+                    body = e.read().decode()
+                except Exception:
+                    pass
+            if "not modified" in str(body):
+                print(f"{method}: already set", flush=True)
+                return True
+            print(f"{method} failed: {e} {body}", flush=True)
+            return False
+
+    title_ok = _set("setChatTitle", {"chat_id": channel, "title": "Daily News"})
+    desc_ok = _set("setChatDescription", {"chat_id": channel, "description": CHANNEL_DESCRIPTION})
+    print(f"setChatTitle: {title_ok}, setChatDescription: {desc_ok}", flush=True)
+    photo_ok = None
+    if photo_path:
+        boundary = uuid.uuid4().hex
+        with open(photo_path, "rb") as f:
+            data = f.read()
+        body = b""
+        body += f"--{boundary}\r\n".encode()
+        body += b'Content-Disposition: form-data; name="chat_id"\r\n\r\n' + channel.encode() + b"\r\n"
+        body += f"--{boundary}\r\n".encode()
+        body += b'Content-Disposition: form-data; name="photo"; filename="daily-news-profile-photo.png"\r\nContent-Type: image/png\r\n\r\n'
+        body += data + b"\r\n"
+        body += f"--{boundary}--\r\n".encode()
+        req = urllib.request.Request(api_url("setChatPhoto"), data=body, method="POST")
+        req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
+        try:
+            with urllib.request.build_opener(NoRedirect()).open(req, timeout=35) as resp:
+                photo_ok = json.loads(resp.read().decode()).get("ok")
+        except Exception as e:
+            print(f"setChatPhoto failed: {e}", flush=True)
+        print(f"setChatPhoto: {photo_ok}", flush=True)
+    return bool(title_ok and desc_ok and (photo_ok is not False))
+
+
+def set_bot_profile_photo(photo_path):
+    """Set the bot's own profile photo. The photo field must be JSON
+    {"type":"static","photo":"attach://botpic.png"} with the file part named
+    botpic.png; a raw file upload or a file_id both fail with HTTP 400."""
+    boundary = uuid.uuid4().hex
+    with open(photo_path, "rb") as f:
+        data = f.read()
+    photo_json = json.dumps({"type": "static", "photo": "attach://botpic.png"})
+    body = b""
+    body += f"--{boundary}\r\n".encode()
+    body += b'Content-Disposition: form-data; name="photo"\r\n\r\n' + photo_json.encode() + b"\r\n"
+    body += f"--{boundary}\r\n".encode()
+    body += b'Content-Disposition: form-data; name="botpic.png"; filename="botpic.png"\r\nContent-Type: image/png\r\n\r\n'
+    body += data + b"\r\n"
+    body += f"--{boundary}--\r\n".encode()
+    req = urllib.request.Request(api_url("setMyProfilePhoto"), data=body, method="POST")
+    req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
+    try:
+        with urllib.request.build_opener(NoRedirect()).open(req, timeout=35) as resp:
+            ok = json.loads(resp.read().decode()).get("ok")
+    except Exception as e:
+        print(f"setMyProfilePhoto failed: {e}", flush=True)
+        ok = False
+    print(f"setMyProfilePhoto: {ok}", flush=True)
+    return bool(ok)
+
+
+MINI_APP_URL = "https://muse.ai/s/daily-news-mini-app-nl6exp9ekxafr/GQF2XII7qd6J-cqexZJxXqGi6D4u336n8ZitQWaNnQk"
+
+BOT_COMMANDS = [
+    ("start", "Start Daily News"),
+    ("menu", "Show the quick menu"),
+    ("hidemenu", "Hide the quick menu"),
+    ("app", "Open the Daily News Mini App"),
+    ("help", "All commands"),
+    ("about", "About Daily News"),
+    ("news", "AI and tech news"),
+    ("ainews", "Latest AI model updates"),
+    ("tech", "Tech news"),
+    ("models", "AI models and changes"),
+    ("freeai", "Free AI tools"),
+    ("invite", "Free AI invite codes"),
+    ("quote", "A daily quote"),
+    ("love", "A love quote"),
+    ("friend", "A friendship quote"),
+    ("khmer", "A quote in Khmer"),
+    ("quoteimg", "A quote as an image"),
+    ("loveimg", "A love quote as an image"),
+    ("friendimg", "A friendship quote as an image"),
+    ("khmerimg", "A Khmer quote as an image"),
+    ("story", "Today's story image"),
+    ("daily", "Daily quote every morning"),
+    ("stopdaily", "Stop daily quotes"),
+    ("quiz", "Play a quiz (30 questions)"),
+    ("guess", "Guess my number, 1 to 100"),
+    ("rps", "Rock, paper, scissors"),
+    ("dice", "Roll a dice"),
+    ("darts", "Throw a dart"),
+    ("bowling", "Bowl a strike"),
+    ("basketball", "Shoot a hoop"),
+    ("football", "Kick a goal"),
+    ("slots", "Spin the slot machine"),
+    ("scramble", "Unscramble the word"),
+    ("poll", "Make a poll"),
+    ("score", "Quiz scores"),
+    ("ask", "Ask me a question"),
+    ("stats", "Bot stats"),
+    ("mystats", "Your stats"),
+    ("top", "Top quiz players"),
+    ("schedule", "Channel posting schedule"),
+    ("channel", "Our channel"),
+    ("remind", "Set a reminder"),
+    ("joke", "A joke"),
+    ("motivate", "Motivation"),
+]
+
+
+def set_bot_commands():
+    """Set the Telegram command menu from BOT_COMMANDS. This is the Commands
+    screen in @BotFather, done via the API instead."""
+    commands = [{"command": c, "description": d} for c, d in BOT_COMMANDS]
+    result = api_call("setMyCommands", {"commands": commands})
+    print(f"setMyCommands: {result.get('ok')} ({len(commands)} commands)", flush=True)
+    return bool(result.get("ok"))
+
+
+def set_bot_profile(photo_path=None):
+    """Fill the bot's own profile: short description, description, photo."""
+    short_ok = api_call("setMyShortDescription", {"short_description": BOT_SHORT_DESCRIPTION}).get("ok")
+    desc_ok = api_call("setMyDescription", {"description": BOT_DESCRIPTION}).get("ok")
+    print(f"setMyShortDescription: {short_ok}, setMyDescription: {desc_ok}", flush=True)
+    photo_ok = set_bot_profile_photo(photo_path) if photo_path else None
+    return bool(short_ok and desc_ok and (photo_ok is not False))
+
+
+def send_design():
+    """Post the channel banner and welcome post, and pin the welcome post."""
+    state = load_state()
+    channel = state.get("channel_id")
+    if not channel:
+        print("no channel set for design post", flush=True)
+        return 0
+    path = make_channel_banner()
+    try:
+        result = send_photo(channel, path, caption=WELCOME_POST_TEXT)
+        print(f"banner posted: {result.get('ok')}", flush=True)
+        message_id = (result.get("result") or {}).get("message_id")
+        if message_id:
+            pin = api_call("pinChatMessage", {"chat_id": channel, "message_id": message_id, "disable_notification": True})
+            print(f"welcome pinned: {pin.get('ok')}", flush=True)
+        return 1 if result.get("ok") else 0
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+def parse_duration(text):
+    m = re.match(r"^(\d+)(s|m|h|d)$", text.strip().lower())
+    if not m:
+        return None
+    value = int(m.group(1))
+    unit = m.group(2)
+    seconds = {"s": 1, "m": 60, "h": 3600, "d": 86400}[unit]
+    return value * seconds
+
+
+def answer_question(question, state, user_record=None):
+    q = question.strip()
+    lower_q = q.lower().rstrip("?")
+    # Maths: "what is 12+8" or "12*7"
+    math_match = re.search(r"(\d[\d\s\.\+\-\*\/\(\)\%]*\d|\d)", q)
+    if "what is" in lower_q and math_match:
+        result = safe_math(math_match.group(1))
+        if result is not None:
+            return f"{math_match.group(1).strip()} = {result}"
+    if re.fullmatch(r"[0-9\s\.\+\-\*\/\(\)\%]+", q):
+        result = safe_math(q)
+        if result is not None:
+            return f"{q.strip()} = {result}"
+    for key, answer in KNOWLEDGE.items():
+        if key in lower_q:
+            return answer
+    if "capital of" in lower_q:
+        return "I don't know that capital yet. I know Cambodia, Thailand, Vietnam, France and Japan. Try /ask what is the capital of Cambodia?"
+    if "what day" in lower_q or "what is today" in lower_q or "what is the date" in lower_q:
+        now = phnom_penh_now()
+        return f"Today is {now.strftime('%A, %d %B %Y')} in Phnom Penh."
+    if "what time" in lower_q:
+        now = phnom_penh_now()
+        return f"It's {now.strftime('%I:%M %p')} in Phnom Penh."
+    if "how many days until" in lower_q:
+        if "christmas" in lower_q:
+            target = datetime.datetime(2026, 12, 25, tzinfo=datetime.timezone(datetime.timedelta(hours=7)))
+            days = (target.date() - phnom_penh_now().date()).days
+            return f"{days} days until Christmas."
+        if "new year" in lower_q:
+            target = datetime.datetime(2027, 1, 1, tzinfo=datetime.timezone(datetime.timedelta(hours=7)))
+            days = (target.date() - phnom_penh_now().date()).days
+            return f"{days} days until New Year."
+    # Save unknown questions so Muse can answer them later in chat
+    state.setdefault("questions", []).append({"question": q, "time": int(time.time()), "user": (user_record or {}).get("name", "someone")})
+    return (
+        "Good question! I don't know that one yet, so I've saved it for Muse to answer. "
+        "In the meantime, try /ask what is the capital of Cambodia? or /ask 12+8, or send /quote for a quote."
+    )
+
+
+def start_keyboard():
+    return {
+        "inline_keyboard": [
+            [{"text": "Get a quote", "callback_data": "quote"}, {"text": "Love quote", "callback_data": "love"}],
+            [{"text": "Quote image", "callback_data": "quoteimg"}, {"text": "Daily quotes", "callback_data": "daily"}],
+            [{"text": "Quiz", "callback_data": "quiz"}, {"text": "About", "callback_data": "about"}],
+        ]
+    }
+
+
+def main_menu_keyboard():
+    """Persistent chat menu: quick buttons under the message box.
+
+    The first button opens the Daily News Mini App right from the
+    keyboard; the rest send their label as a message, which the bot
+    answers like the matching command.
+    """
+    return {
+        "keyboard": [
+            [{"text": "📱 Daily News App", "web_app": {"url": MINI_APP_URL}}],
+            [{"text": "💬 Quote"}, {"text": "📰 News"}, {"text": "🎮 Games"}],
+            [{"text": "❤️ Love"}, {"text": "🤝 Friend"}, {"text": "🇰🇭 Khmer"}],
+            [{"text": "🎯 Quiz"}, {"text": "📅 Schedule"}, {"text": "ℹ️ Help"}],
+        ],
+        "resize_keyboard": True,
+        "is_persistent": True,
+    }
+
+
+def hide_menu_keyboard():
+    return {"remove_keyboard": True}
+
+
+GAMES_MENU_TEXT = (
+    "🎮 Games — pick one:\n\n"
+    "/quiz — a quiz question (30 questions!)\n"
+    "/guess — guess my number, 1 to 100\n"
+    "/rps — rock, paper, scissors\n"
+    "/dice 🎲  /darts 🎯  /bowling 🎳\n"
+    "/basketball 🏀  /football ⚽  /slots 🎰\n"
+    "/scramble — unscramble the word\n\n"
+    "Or tap 🎯 Quiz on the menu below."
+)
+
+
+def build_inline_results(query, state=None):
+    """Inline query results for @MuseVishnu_bot typed in any chat.
+
+    Returns a list of InlineQueryResultArticle dicts for answerInlineQuery.
+    Query keywords route the results: love / friend / khmer / news / app.
+    """
+    q = (query or "").strip().lower()
+
+    def article(rid, title, description, text, keyboard=None):
+        result = {
+            "type": "article",
+            "id": rid,
+            "title": title,
+            "description": description,
+            "input_message_content": {"message_text": text},
+        }
+        if keyboard:
+            result["reply_markup"] = keyboard
+        return result
+
+    app_keyboard = {"inline_keyboard": [[{"text": "📱 Open Daily News App", "web_app": {"url": MINI_APP_URL}}]]}
+    channel_keyboard = {"inline_keyboard": [[{"text": "📰 Open channel", "url": "https://t.me/dailynewsreporter"}]]}
+
+    quote = pick_quote("any", state)
+    love = pick_quote("love", state)
+    friend = pick_quote("friend", state)
+    khmer = pick_quote("khmer", state)
+
+    results = []
+    if "love" in q:
+        results.append(article("love", "❤️ Love quote", love, f"❤️ {love}\n\n— Daily News @dailynewsreporter"))
+    elif "friend" in q:
+        results.append(article("friend", "🤝 Friendship quote", friend, f"🤝 {friend}\n\n— Daily News @dailynewsreporter"))
+    elif "khmer" in q:
+        results.append(article("khmer", "🇰🇭 Khmer quote", khmer, f"🇰🇭 {khmer}\n\n— Daily News @dailynewsreporter"))
+    elif "news" in q or "app" in q:
+        results.append(article("app", "📱 Daily News Mini App", "Quotes, AI news, free AI tools, quiz and schedule", "📱 Daily News — quotes, AI news, free AI tools and quiz, all in one app.", app_keyboard))
+        results.append(article("channel", "📰 Daily News channel", "Tech, AI and quotes every day", "📰 Daily News @dailynewsreporter\nhttps://t.me/dailynewsreporter", channel_keyboard))
+    if not results or "quote" in q or q == "":
+        results.append(article("quote", "💬 Daily quote", quote, f"💬 {quote}\n\n— Daily News @dailynewsreporter"))
+    if len(results) < 5 and not any(r["id"] == "love" for r in results):
+        results.append(article("love", "❤️ Love quote", love, f"❤️ {love}\n\n— Daily News @dailynewsreporter"))
+    if len(results) < 5 and not any(r["id"] == "friend" for r in results):
+        results.append(article("friend", "🤝 Friendship quote", friend, f"🤝 {friend}\n\n— Daily News @dailynewsreporter"))
+    if len(results) < 5 and not any(r["id"] == "app" for r in results):
+        results.append(article("app", "📱 Daily News Mini App", "Quotes, AI news, free AI tools, quiz and schedule", "📱 Daily News — quotes, AI news, free AI tools and quiz, all in one app.", app_keyboard))
+    if len(results) < 5 and not any(r["id"] == "channel" for r in results):
+        results.append(article("channel", "📰 Daily News channel", "Tech, AI and quotes every day", "📰 Daily News @dailynewsreporter\nhttps://t.me/dailynewsreporter", channel_keyboard))
+    return results[:5]
+
+
+def handle_update(update, state, dry_run=False):
+    """Return a list of action dicts for one update."""
+    actions = []
+
+    # Inline queries: @MuseVishnu_bot typed in any chat
+    if "inline_query" in update:
+        iq = update["inline_query"]
+        results = build_inline_results(iq.get("query", ""), state)
+        actions.append({"type": "inline", "inline_query_id": iq.get("id"), "results": results})
+        return actions
+
+    # Poll answers for quiz scoring
+    if "poll_answer" in update:
+        answer = update["poll_answer"]
+        poll_id = answer.get("poll_id")
+        user = answer.get("user", {})
+        quiz = state.get("quiz_polls", {}).get(poll_id)
+        if quiz:
+            chosen = answer.get("option_ids", [])
+            correct = chosen and chosen[0] == quiz["correct"]
+            uid = str(user.get("id"))
+            score = state["scores"].setdefault(uid, {"name": user.get("first_name", "Player"), "correct": 0, "total": 0})
+            score["total"] += 1
+            if correct:
+                score["correct"] += 1
+                actions.append({"type": "text", "chat_id": quiz["chat_id"], "text": f"Correct, {score['name']}! {quiz.get('explain', '')} Your score: {score['correct']}/{score['total']}"})
+            else:
+                actions.append({"type": "text", "chat_id": quiz["chat_id"], "text": f"Not quite, {score['name']}. The answer was: {quiz['options'][quiz['correct']]}. Your score: {score['correct']}/{score['total']}"})
+        return actions
+
+    # Inline button taps
+    if "callback_query" in update:
+        cb = update["callback_query"]
+        data = cb.get("data", "")
+        chat_id = (cb.get("message") or {}).get("chat", {}).get("id")
+        if not chat_id:
+            return actions
+        actions.append({"type": "callback", "callback_id": cb.get("id"), "text": "Got it!"})
+        if data == "quote":
+            actions.append({"type": "text", "chat_id": chat_id, "text": pick_quote("any")})
+        elif data == "love":
+            actions.append({"type": "text", "chat_id": chat_id, "text": pick_quote("love")})
+        elif data == "quoteimg":
+            _q = pick_quote("any")
+            actions.append({"type": "photo", "chat_id": chat_id, "quote": _q, "caption": channel_caption(_q, "daily")})
+        elif data == "about":
+            actions.append({"type": "text", "chat_id": chat_id, "text": ABOUT_TEXT})
+        elif data == "daily":
+            if chat_id not in state["subscribers"]:
+                state["subscribers"].append(chat_id)
+            actions.append({"type": "text", "chat_id": chat_id, "text": "You're in! I'll send you a daily quote every morning. Use /stopdaily anytime to stop."})
+        elif data == "quiz":
+            q = random.choice(QUIZ_QUESTIONS)
+            actions.append({"type": "quiz", "chat_id": chat_id, "question": q})
+        elif data.startswith("rps:"):
+            player = data.split(":", 1)[1]
+            bot = random.choice(RPS_CHOICES)
+            result = rps_result(player, bot)
+            if result == "win":
+                verdict = "You win! 🎉"
+            elif result == "lose":
+                verdict = "I win! 😄"
+            else:
+                verdict = "It's a draw! 🤝"
+            actions.append({"type": "text", "chat_id": chat_id, "text": f"{RPS_EMOJI[player]} vs {RPS_EMOJI[bot]}\n{verdict}\n\nPlay again with /rps."})
+        return actions
+
+    message = update.get("message") or update.get("channel_post") or {}
+    chat = message.get("chat", {})
+    chat_id = chat.get("id")
+    if not chat_id:
+        return actions
+
+    new_members = message.get("new_chat_members", [])
+    for member in new_members:
+        name = member.get("first_name", "friend")
+        custom = get_group_settings(state, chat_id).get("welcome", "")
+        welcome = custom.replace("{name}", name) if custom else f"Welcome, {name}! So glad you're here. Try /quote for a little kindness, or /help to see what I can do."
+        actions.append({"type": "text", "chat_id": chat_id, "text": welcome})
+    if new_members:
+        return actions
+
+    text = (message.get("text") or "").strip()
+    if not text:
+        return actions
+
+    first_word_early = text.split()[0].lower().split("@")[0]
+    user_record = track_user(state, message, command=first_word_early if first_word_early.startswith("/") else "")
+
+    # Anti-spam and anti-link, groups only, non-admins only
+    chat_type = chat.get("type", "")
+    sender = message.get("from") or {}
+    sender_id = sender.get("id")
+    if chat_type in ("group", "supergroup") and not text.startswith("/"):
+        settings = get_group_settings(state, chat_id)
+        admin = is_admin(chat_id, sender_id, dry_run=dry_run)
+        if not admin and settings.get("antilink") and ("http://" in text or "https://" in text or "t.me/" in text):
+            actions.append({"type": "delete", "chat_id": chat_id, "message_id": message.get("message_id")})
+            actions.append({"type": "text", "chat_id": chat_id, "text": f"Links are not allowed here, {sender.get('first_name', 'friend')}."})
+            return actions
+        if not admin and settings.get("antispam"):
+            now_ts = int(time.time())
+            key = (chat_id, sender_id)
+            times = [t for t in FLOOD_TRACKER.get(key, []) if now_ts - t < 10]
+            times.append(now_ts)
+            FLOOD_TRACKER[key] = times
+            if len(times) > 5:
+                FLOOD_TRACKER[key] = []
+                until = now_ts + 300
+                actions.append({"type": "restrict", "chat_id": chat_id, "user_id": sender_id, "until": until, "permissions": {"can_send_messages": False}})
+                actions.append({"type": "text", "chat_id": chat_id, "text": f"{sender.get('first_name', 'friend')} was muted for 5 minutes for flooding."})
+                return actions
+
+    first_word = text.split()[0]
+    command = first_word.lower()
+    if "@" in command:
+        command = command.split("@")[0]
+    args = text[len(first_word):].strip()
+    lower = text.lower()
+
+    def reply(msg, keyboard=None):
+        action = {"type": "text", "chat_id": chat_id, "text": msg}
+        if keyboard:
+            action["keyboard"] = keyboard
+        actions.append(action)
+
+    if command == "/start":
+        first = (message.get("from") or {}).get("first_name", "friend")
+        reply(f"Hi {first}, welcome to Daily News.\n\n{HELP_TEXT}", keyboard=start_keyboard())
+    elif command == "/help":
+        reply(HELP_TEXT)
+    elif command == "/about":
+        reply(ABOUT_TEXT)
+    elif command == "/news":
+        reply(NEWS_TEXT)
+    elif command in ("/ainews", "/tech"):
+        reply(MODELS_TEXT)
+    elif command == "/models":
+        reply(MODELS_TEXT)
+    elif command == "/freeai":
+        reply(FREE_AI_TEXT)
+    elif command == "/invite":
+        codes = state.get("invite_codes", [])
+        if not codes:
+            reply(
+                "Free AI invite codes\n\n"
+                "No codes are saved in the bot right now. When the owner adds a real code, it will appear here.\n\n"
+                "About Muse AI: Muse is Meta's personal AI agent, free with usage limits. In the US, Canada and Japan you can join at muse.ai without an invite code. A referral code, redeemed in Settings within 48 hours of joining, is reported to give you and the sharer 1 billion bonus tokens each. Each code is reported to work about 20 times, then it is used up.\n\n"
+                "Never pay for a code. Codes shared online may already be used up — try another one if the first fails."
+            )
+        else:
+            lines = ["Free AI invite codes — shared by the owner, try them fast, each code works a limited number of times:\n"]
+            lines.extend(f"• {c.get('service', 'AI')}: {c.get('code', '')}" for c in codes)
+            lines.append("\nRedeem a Muse code in the Muse app: Settings → Redeem invite code, within 48 hours of joining. Never pay for a code.")
+            reply("\n".join(lines))
+    elif command == "/addinvite":
+        if sender_id != OWNER_ID:
+            reply("Only the channel owner can add invite codes.")
+        else:
+            parts = args.split()
+            if len(parts) < 2:
+                reply("Add a code like this: /addinvite Muse 4VV2NY — only add a code you actually own or have verified.")
+            else:
+                state.setdefault("invite_codes", []).append({"service": parts[0], "code": parts[1]})
+                reply(f"Saved invite code for {parts[0]}: {parts[1]}. People can see it with /invite.")
+    elif command == "/postnews":
+        if sender_id != OWNER_ID:
+            reply("Only the channel owner can post news to the channel.")
+        else:
+            parts = [p.strip() for p in args.split("|")]
+            if len(parts) < 2:
+                reply("Post news like this: /postnews Title | Summary | Source")
+            else:
+                channel = state.get("channel_id")
+                if not channel:
+                    reply("No channel set yet.")
+                else:
+                    caption = news_caption(parts[0], parts[1], parts[2] if len(parts) > 2 else "")
+                    actions.append({"type": "text", "chat_id": channel, "text": caption})
+                    reply(f"Posted news to {channel}.")
+    elif command == "/quote":
+        reply(pick_quote("any", state))
+    elif command == "/love":
+        reply(pick_quote("love", state))
+    elif command == "/friend":
+        reply(pick_quote("friend", state))
+    elif command == "/khmer":
+        reply(pick_quote("khmer", state))
+    elif command == "/addquote":
+        if sender_id != OWNER_ID:
+            reply("Only the channel owner can add quotes.")
+        elif not args:
+            reply("Add a quote like this: /addquote Be kind, always.")
+        else:
+            state.setdefault("custom_quotes", []).append(args)
+            reply(f"Quote added. The library now has {len(DAILY_QUOTES) + len(state['custom_quotes'])} quotes.")
+    elif command == "/schedule":
+        reply(SCHEDULE_TEXT)
+    elif command == "/story":
+        _q = pick_quote("any")
+        actions.append({"type": "story", "chat_id": chat_id, "quote": _q, "caption": "📸 Today's Daily News story — post it to @dailynewsreporter as a story.\n\n" + _q})
+    elif command == "/app":
+        actions.append({"type": "text", "chat_id": chat_id, "text": "📱 Daily News Mini App — quotes, AI news, free AI tools, invite codes, quiz and the schedule, all in one place.", "keyboard": {"inline_keyboard": [[{"text": "📱 Open Daily News App", "web_app": {"url": MINI_APP_URL}}]]}})
+    elif command == "/menu":
+        reply("Here's your menu 👇 Tap a button any time — it stays under the message box.", keyboard=main_menu_keyboard())
+    elif command == "/hidemenu":
+        reply("Menu hidden. Send /menu any time to bring it back.", keyboard=hide_menu_keyboard())
+    elif command in ("/quoteimg", "/loveimg", "/friendimg", "/khmerimg"):
+        kind = "love" if command == "/loveimg" else "friend" if command == "/friendimg" else "khmer" if command == "/khmerimg" else "any"
+        _q = pick_quote(kind)
+        actions.append({"type": "photo", "chat_id": chat_id, "quote": _q, "caption": channel_caption(_q, "love" if kind == "love" else "friend" if kind == "friend" else "daily")})
+    elif command == "/daily":
+        if chat_id not in state["subscribers"]:
+            state["subscribers"].append(chat_id)
+        reply("You're in! I'll send you a daily quote every morning. Use /stopdaily anytime to stop.")
+    elif command == "/stopdaily":
+        if chat_id in state["subscribers"]:
+            state["subscribers"].remove(chat_id)
+        reply("No more daily quotes. You can come back anytime with /daily.")
+    elif command == "/time":
+        now = phnom_penh_now()
+        reply(f"It's {now.strftime('%A, %d %B %Y, %I:%M %p')} in Phnom Penh.")
+    elif command == "/echo":
+        reply(args or "You didn't give me anything to echo. Try /echo hello")
+    elif command == "/rules":
+        custom_rules = get_group_settings(state, chat_id).get("rules", "")
+        reply(custom_rules or RULES_TEXT)
+    elif command == "/admins":
+        if chat_type not in ("group", "supergroup"):
+            reply("This only works in a group. Add me to a group and make me an admin.")
+        elif dry_run:
+            reply("Group admins:\nDailyquote (creator)\nMuseVishnu_bot")
+        else:
+            try:
+                result = api_call("getChatAdministrators", {"chat_id": chat_id})
+                names = []
+                for a in result.get("result", []):
+                    u = a.get("user") or {}
+                    names.append(f"{u.get('first_name', 'Admin')} ({a.get('status')})")
+                reply("Group admins:\n" + "\n".join(names) if names else "I could not list the admins.")
+            except Exception as e:
+                reply(f"I could not list the admins. Make me an admin first. Error: {e}")
+    elif command in ("/ban", "/unban", "/kick", "/mute", "/unmute", "/warn", "/warns", "/unwarn", "/pin", "/unpin", "/del", "/lock", "/unlock", "/setwelcome", "/setrules", "/antilink", "/antispam"):
+        if chat_type not in ("group", "supergroup"):
+            reply("Admin commands only work in a group. Add me to a group and make me an admin.")
+        elif not is_admin(chat_id, sender_id, dry_run=dry_run):
+            reply("Only group admins can use that command.")
+        elif command == "/setwelcome":
+            get_group_settings(state, chat_id)["welcome"] = args
+            reply(f"Welcome message saved. Use {{name}} for the new member's name.\n\n{args}" if args else "Tell me the welcome text, like /setwelcome Welcome {name}!")
+        elif command == "/setrules":
+            get_group_settings(state, chat_id)["rules"] = args
+            reply(f"Rules saved.\n\n{args}" if args else "Tell me the rules, like /setrules Be kind.")
+        elif command == "/antilink":
+            on = args.lower() in ("on", "yes", "true", "1")
+            get_group_settings(state, chat_id)["antilink"] = on
+            reply(f"Anti-link is now {'on' if on else 'off'}.")
+        elif command == "/antispam":
+            on = args.lower() not in ("off", "no", "false", "0")
+            get_group_settings(state, chat_id)["antispam"] = on
+            reply(f"Anti-spam is now {'on' if on else 'off'}.")
+        elif command == "/warns":
+            target_id, target_name = target_user(message, args)
+            if not target_id:
+                reply("Reply to a member's message, or give their user id, like /warns 123456")
+            else:
+                count = get_group_settings(state, chat_id)["warnings"].get(str(target_id), 0)
+                reply(f"{target_name} has {count} warning(s).")
+        elif command == "/unwarn":
+            target_id, target_name = target_user(message, args)
+            if not target_id:
+                reply("Reply to a member's message, or give their user id.")
+            else:
+                get_group_settings(state, chat_id)["warnings"].pop(str(target_id), None)
+                reply(f"Warnings cleared for {target_name}.")
+        elif command == "/warn":
+            target_id, target_name = target_user(message, args)
+            if not target_id:
+                reply("Reply to a member's message to warn them, like /warn, or /warn 123456")
+            else:
+                settings = get_group_settings(state, chat_id)
+                count = settings["warnings"].get(str(target_id), 0) + 1
+                settings["warnings"][str(target_id)] = count
+                if count >= 3:
+                    settings["warnings"][str(target_id)] = 0
+                    actions.append({"type": "restrict", "chat_id": chat_id, "user_id": target_id, "until": int(time.time()) + 3600, "permissions": {"can_send_messages": False}})
+                    reply(f"{target_name} reached 3 warnings and was muted for 1 hour.")
+                else:
+                    reply(f"Warning {count}/3 for {target_name}.")
+        elif command == "/pin":
+            replied_id = (message.get("reply_to_message") or {}).get("message_id")
+            if not replied_id:
+                reply("Reply to the message you want to pin, then send /pin.")
+            else:
+                actions.append({"type": "pin", "chat_id": chat_id, "message_id": replied_id})
+                reply("Pinned.")
+        elif command == "/unpin":
+            actions.append({"type": "unpin", "chat_id": chat_id})
+            reply("Unpinned the last pinned message.")
+        elif command == "/del":
+            replied_id = (message.get("reply_to_message") or {}).get("message_id")
+            if not replied_id:
+                reply("Reply to the message you want to delete, then send /del.")
+            else:
+                actions.append({"type": "delete", "chat_id": chat_id, "message_id": replied_id})
+        elif command == "/lock":
+            actions.append({"type": "set_permissions", "chat_id": chat_id, "permissions": {"can_send_messages": False}})
+            reply("Group locked. Only admins can send messages now. Use /unlock to open it again.")
+        elif command == "/unlock":
+            actions.append({"type": "set_permissions", "chat_id": chat_id, "permissions": {"can_send_messages": True, "can_send_media_messages": True, "can_send_polls": True, "can_send_other_messages": True, "can_add_web_page_previews": True}})
+            reply("Group unlocked. Everyone can send messages again.")
+        else:
+            target_id, target_name = target_user(message, args)
+            if not target_id:
+                reply("Reply to a member's message, or give their user id, like /ban 123456")
+            elif command == "/ban":
+                actions.append({"type": "ban", "chat_id": chat_id, "user_id": target_id})
+                reply(f"{target_name} was banned.")
+            elif command == "/unban":
+                actions.append({"type": "unban", "chat_id": chat_id, "user_id": target_id})
+                reply(f"{target_name} was unbanned.")
+            elif command == "/kick":
+                actions.append({"type": "ban", "chat_id": chat_id, "user_id": target_id})
+                actions.append({"type": "unban", "chat_id": chat_id, "user_id": target_id})
+                reply(f"{target_name} was kicked.")
+            elif command == "/mute":
+                seconds = parse_duration(args.split(None, 1)[0]) if args else None
+                if seconds is None and args:
+                    # /mute with no valid time after the user id, default 1 hour
+                    seconds = 3600
+                if seconds is None:
+                    seconds = 3600
+                actions.append({"type": "restrict", "chat_id": chat_id, "user_id": target_id, "until": int(time.time()) + seconds, "permissions": {"can_send_messages": False}})
+                reply(f"{target_name} was muted for {seconds // 60} minute(s).")
+            elif command == "/unmute":
+                actions.append({"type": "restrict", "chat_id": chat_id, "user_id": target_id, "until": None, "permissions": {"can_send_messages": True, "can_send_media_messages": True, "can_send_polls": True, "can_send_other_messages": True, "can_add_web_page_previews": True}})
+                reply(f"{target_name} was unmuted.")
+    elif command == "/info":
+        title = chat.get("title") or chat.get("first_name") or "this chat"
+        reply(f"This is {title} (chat id {chat_id}, type {chat.get('type')}). I'm @MuseVishnu_bot.")
+    elif command == "/setchannel":
+        if not args:
+            reply("Tell me the channel, like /setchannel @YourChannel — and make me an admin there first so I can post.")
+        else:
+            state["channel_id"] = args
+            reply(f"Channel set to {args}. Make sure I'm an admin there, then try /postquote to test it.")
+    elif command == "/channel":
+        reply(f"Our channel is @dailynewsreporter — Daily News: tech, AI, free AI tools and invite codes, plus a daily quote.\n\nFollow it here: https://t.me/dailynewsreporter\n\nCurrent channel set in the bot: {state.get('channel_id') or 'not set yet'}")
+    elif command == "/postquote":
+        channel = state.get("channel_id")
+        if not channel:
+            reply("No channel set yet. Use /setchannel @YourChannel first, and make me an admin there.")
+        else:
+            kind = args.lower() if args.lower() in ("love", "friend", "motivate", "daily") else "daily"
+            _q = pick_quote(kind if kind != "daily" else "any")
+            actions.append({"type": "photo", "chat_id": channel, "quote": _q, "caption": channel_caption(_q, kind)})
+            reply(f"Posted a {kind} quote image to {channel}.")
+    elif command == "/quiz":
+        q = random.choice(QUIZ_QUESTIONS)
+        actions.append({"type": "quiz", "chat_id": chat_id, "question": q})
+    elif command == "/poll":
+        parts = [p.strip() for p in args.split("|")]
+        if len(parts) < 3:
+            reply("Make a poll like this: /poll Do you like quotes? | Yes | No")
+        else:
+            actions.append({"type": "poll", "chat_id": chat_id, "question": parts[0], "options": parts[1:]})
+    elif command == "/score":
+        scores = state.get("scores", {})
+        if not scores:
+            reply("No quiz scores yet. Try /quiz to play!")
+        else:
+            lines = sorted(scores.values(), key=lambda s: s["correct"], reverse=True)
+            text_out = "Quiz scores:\n" + "\n".join(f"{s['name']}: {s['correct']}/{s['total']}" for s in lines[:10])
+            reply(text_out)
+    elif command == "/guess":
+        games = state.setdefault("guess_games", {})
+        key = str(chat_id)
+        if args and args.strip().lstrip("-").isdigit():
+            guess = int(args.strip())
+            game = games.get(key)
+            if not game:
+                reply("No guessing game running. Send /guess to start one!")
+            else:
+                game["attempts"] += 1
+                if guess == game["number"]:
+                    reply(f"🎉 Correct! The number was {game['number']}. You got it in {game['attempts']} tries! Play again with /guess.")
+                    del games[key]
+                elif guess < game["number"]:
+                    reply(f"Too low! Try a bigger number. (Attempt {game['attempts']})")
+                else:
+                    reply(f"Too high! Try a smaller number. (Attempt {game['attempts']})")
+        else:
+            games[key] = {"number": random.randint(1, 100), "attempts": 0}
+            reply("🎲 I'm thinking of a number between 1 and 100. Just send a number to guess — or use /guess 42. Good luck!")
+    elif command == "/rps":
+        keyboard = {"inline_keyboard": [[
+            {"text": "🪨 Rock", "callback_data": "rps:rock"},
+            {"text": "📄 Paper", "callback_data": "rps:paper"},
+            {"text": "✂️ Scissors", "callback_data": "rps:scissors"},
+        ]]}
+        reply("✊✋✌️ Rock, Paper, Scissors — pick one!", keyboard=keyboard)
+    elif command in ("/dice", "/darts", "/bowling", "/basketball", "/football", "/slots"):
+        emoji = {"/dice": "🎲", "/darts": "🎯", "/bowling": "🎳", "/basketball": "🏀", "/football": "⚽", "/slots": "🎰"}[command]
+        actions.append({"type": "dice", "chat_id": chat_id, "emoji": emoji})
+    elif command == "/scramble":
+        games = state.setdefault("scramble_games", {})
+        word = random.choice(SCRAMBLE_WORDS)
+        games[str(chat_id)] = {"word": word, "scrambled": scramble_word(word)}
+        reply(f"🔤 Unscramble this word: {games[str(chat_id)]['scrambled']}\n\nJust type your answer!")
+    elif command == "/remind":
+        parts = args.split(None, 1)
+        if len(parts) < 2:
+            reply("Remind me like this: /remind 10m drink water — use s, m, h or d, like 30s, 10m, 1h.")
+        else:
+            seconds = parse_duration(parts[0])
+            if seconds is None:
+                reply("I didn't understand that time. Try /remind 10m drink water")
+            else:
+                due = int(time.time()) + seconds
+                state["reminders"].append({"chat_id": chat_id, "text": parts[1], "due": due, "user": (message.get("from") or {}).get("first_name", "friend")})
+                reply(f"Got it, I'll remind you in {parts[0]}: {parts[1]}")
+    elif command == "/reminders":
+        mine = [r for r in state.get("reminders", []) if r["chat_id"] == chat_id]
+        if not mine:
+            reply("You have no reminders set. Try /remind 10m drink water")
+        else:
+            lines = []
+            for r in mine:
+                mins = max(0, (r["due"] - int(time.time())) // 60)
+                lines.append(f"in about {mins}m: {r['text']}")
+            reply("Your reminders:\n" + "\n".join(lines))
+    elif command == "/ask":
+        if not args:
+            reply("Ask me like this: /ask what is the capital of Cambodia? I can answer facts, do maths, and tell you the time and date.")
+        else:
+            answer = answer_question(args, state, user_record)
+            reply(answer)
+    elif command == "/stats":
+        stats = state.get("stats", {})
+        users = state.get("users", {})
+        started = datetime.datetime.fromtimestamp(stats.get("started", int(time.time())), tz=datetime.timezone(datetime.timedelta(hours=7)))
+        uptime_hours = max(0, (int(time.time()) - stats.get("started", int(time.time()))) // 3600)
+        top_cmd = ""
+        if stats.get("commands"):
+            top_cmd = max(stats["commands"], key=lambda k: stats["commands"][k])
+        reply(
+            "Bot stats:\n"
+            f"Messages handled: {stats.get('messages', 0)}\n"
+            f"People I have talked to: {len(users)}\n"
+            f"Daily subscribers: {len(state.get('subscribers', []))}\n"
+            f"Channel: {state.get('channel_id') or 'not set'}\n"
+            f"Quotes sent: {stats.get('quotes_sent', 0)}\n"
+            f"Quiz players: {len(state.get('scores', {}))}\n"
+            f"Reminders waiting: {len(state.get('reminders', []))}\n"
+            f"Most used command: {top_cmd or 'none yet'}\n"
+            f"Running since: {started.strftime('%d %B %Y %I:%M %p')} (about {uptime_hours}h)"
+        )
+    elif command == "/mystats":
+        if not user_record:
+            reply("I don't know you yet. Send me a message first.")
+        else:
+            score = state.get("scores", {}).get(str((message.get("from") or {}).get("id", "")), {"correct": 0, "total": 0})
+            reply(
+                f"Your stats, {user_record.get('name', 'friend')}:\n"
+                f"Messages: {user_record.get('messages', 0)}\n"
+                f"Quotes you asked for: {user_record.get('quotes', 0)}\n"
+                f"Quizzes played: {user_record.get('quizzes', 0)}\n"
+                f"Quiz score: {score.get('correct', 0)}/{score.get('total', 0)}\n"
+                f"Favourite: {user_record.get('favourite') or 'not yet'}\n"
+                f"Last command: {user_record.get('last_command') or 'none'}"
+            )
+    elif command == "/top":
+        scores = state.get("scores", {})
+        users = state.get("users", {})
+        lines = []
+        if scores:
+            ranked = sorted(scores.values(), key=lambda s: s["correct"], reverse=True)[:5]
+            lines.append("Top quiz players:")
+            lines.extend(f"{i+1}. {s['name']}: {s['correct']}/{s['total']}" for i, s in enumerate(ranked))
+        if users:
+            active = sorted(users.values(), key=lambda u: u.get("messages", 0), reverse=True)[:5]
+            lines.append("Most active chatters:")
+            lines.extend(f"{i+1}. {u['name']}: {u.get('messages', 0)} messages" for i, u in enumerate(active))
+        reply("\n".join(lines) if lines else "No stats yet. Try /quiz or send me a message!")
+    elif command == "/joke":
+        reply(random.choice(JOKES))
+    elif command == "/motivate":
+        reply(random.choice(MOTIVATION))
+    elif text in ("💬 Quote", "❤️ Love", "🤝 Friend", "🇰🇭 Khmer"):
+        kind = {"💬 Quote": "any", "❤️ Love": "love", "🤝 Friend": "friend", "🇰🇭 Khmer": "khmer"}[text]
+        reply(pick_quote(kind))
+    elif text == "📰 News":
+        reply(NEWS_TEXT)
+    elif text == "🎮 Games":
+        reply(GAMES_MENU_TEXT)
+    elif text == "🎯 Quiz":
+        q = random.choice(QUIZ_QUESTIONS)
+        actions.append({"type": "quiz", "chat_id": chat_id, "question": q})
+    elif text == "📅 Schedule":
+        reply(SCHEDULE_TEXT)
+    elif text == "ℹ️ Help":
+        reply(HELP_TEXT)
+    elif not text.startswith("/") and text.strip().lstrip("-").isdigit() and str(chat_id) in state.get("guess_games", {}):
+        guess = int(text.strip())
+        game = state["guess_games"][str(chat_id)]
+        game["attempts"] += 1
+        if guess == game["number"]:
+            reply(f"🎉 Correct! The number was {game['number']}. You got it in {game['attempts']} tries! Play again with /guess.")
+            del state["guess_games"][str(chat_id)]
+        elif guess < game["number"]:
+            reply(f"Too low! Try a bigger number. (Attempt {game['attempts']})")
+        else:
+            reply(f"Too high! Try a smaller number. (Attempt {game['attempts']})")
+    elif not text.startswith("/") and str(chat_id) in state.get("scramble_games", {}):
+        game = state["scramble_games"][str(chat_id)]
+        if text.strip().lower() == game["word"]:
+            reply(f"🎉 Correct! The word was {game['word'].upper()}. Play again with /scramble.")
+            del state["scramble_games"][str(chat_id)]
+        else:
+            reply(f"Not quite — the scrambled word is {game['scrambled']}. Try again!")
+    elif lower.startswith(("hello", "hi", "hey", "សួស្តី")):
+        reply("Hello! Lovely to hear from you. Want a quote? Just send /quote, or /quoteimg for a picture.")
+    elif "joke" in lower:
+        reply(random.choice(JOKES))
+    elif "quote" in lower:
+        reply(pick_quote("any"))
+    elif "thank" in lower:
+        reply("You're very welcome! Want another quote? Send /quote.")
+    elif "how are you" in lower:
+        reply("I'm doing well, thank you! Running on quotes and kindness. How are you?")
+    elif lower.startswith(("who are you", "what can you do")):
+        reply(HELP_TEXT)
+    elif "good morning" in lower:
+        reply("Good morning! Here's a little kindness to start your day: " + pick_quote("any"))
+    elif "good night" in lower:
+        reply("Good night! Sleep well. Here's a quote for tomorrow: " + pick_quote("any"))
+    elif text.startswith("/"):
+        reply("I don't know that command yet. Try /help to see what I can do.")
+    elif any(w in lower for w in ("i am sad", "i'm sad", "i feel sad", "i am tired", "i'm tired", "i feel down", "i am lonely")):
+        name = (message.get("from") or {}).get("first_name", "friend")
+        reply(f"I'm sorry you're feeling that way, {name}. Here's something for you: {pick_quote('any')}")
+    elif any(w in lower for w in ("i am happy", "i'm happy", "i feel great", "i am excited")):
+        reply("That's wonderful to hear! I'm glad. Want to celebrate with a quote? Send /quote.")
+    elif "what is" in lower or lower.endswith("?"):
+        reply(answer_question(text, state, user_record))
+    elif re.fullmatch(r"[0-9\s\.\+\-\*\/\(\)\%]+", text):
+        result = safe_math(text)
+        reply(f"{text.strip()} = {result}" if result is not None else "I couldn't work that out. Try something like 12+8.")
+    elif "remember" in lower and "my name is" in lower:
+        reply(f"Got it, I'll remember you. Nice to meet you, {(message.get('from') or {}).get('first_name', 'friend')}!")
+    else:
+        # Use memory: greet returning users by name and favourite
+        if user_record and user_record.get("messages", 0) > 3:
+            reply(f"Thanks, {user_record.get('name', 'friend')}! You have sent me {user_record.get('messages', 0)} messages now. Send /quote for a quote, /quiz for a game, /ask to ask me something, or /help to see everything.")
+        else:
+            reply("Thanks for your message! Send /quote for a quote, /quoteimg for a picture, /quiz for a game, /ask to ask me something, or /help to see everything I can do.")
+    return actions
+
+
+def execute_actions(actions, state):
+    for action in actions:
+        if action["type"] == "text":
+            send_message(action["chat_id"], action["text"], reply_markup=action.get("keyboard"))
+        elif action["type"] == "photo":
+            path = make_quote_image(action["quote"])
+            try:
+                send_photo(action["chat_id"], path, caption=action.get("caption", ""))
+            finally:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+        elif action["type"] == "story":
+            path = make_story_image(action["quote"])
+            try:
+                send_photo(action["chat_id"], path, caption=action.get("caption", ""))
+            finally:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+        elif action["type"] == "quiz":
+            q = action["question"]
+            result = send_poll(action["chat_id"], q["q"], q["options"], is_quiz=True, correct=q["correct"], explanation=q["explain"])
+            poll_id = (result.get("result") or {}).get("poll", {}).get("id")
+            if poll_id:
+                state["quiz_polls"][poll_id] = {"chat_id": action["chat_id"], "correct": q["correct"], "options": q["options"], "explain": q["explain"]}
+                save_state(state)
+        elif action["type"] == "poll":
+            send_poll(action["chat_id"], action["question"], action["options"])
+        elif action["type"] == "callback":
+            try:
+                api_call("answerCallbackQuery", {"callback_query_id": action["callback_id"], "text": action.get("text", "")})
+            except Exception as e:
+                print(f"answerCallbackQuery failed: {e}", flush=True)
+        elif action["type"] == "inline":
+            try:
+                api_call("answerInlineQuery", {"inline_query_id": action["inline_query_id"], "results": action["results"], "cache_time": 60, "is_personal": True})
+            except Exception as e:
+                print(f"answerInlineQuery failed: {e}", flush=True)
+        elif action["type"] == "dice":
+            try:
+                api_call("sendDice", {"chat_id": action["chat_id"], "emoji": action["emoji"]})
+            except Exception as e:
+                print(f"sendDice failed: {e}", flush=True)
+        elif action["type"] == "ban":
+            api_call("banChatMember", {"chat_id": action["chat_id"], "user_id": action["user_id"]})
+            print(f"banned {action['user_id']} in {action['chat_id']}", flush=True)
+        elif action["type"] == "unban":
+            api_call("unbanChatMember", {"chat_id": action["chat_id"], "user_id": action["user_id"]})
+            print(f"unbanned {action['user_id']} in {action['chat_id']}", flush=True)
+        elif action["type"] == "restrict":
+            payload = {"chat_id": action["chat_id"], "user_id": action["user_id"], "permissions": action["permissions"]}
+            if action.get("until"):
+                payload["until_date"] = action["until"]
+            api_call("restrictChatMember", payload)
+            print(f"restricted {action['user_id']} in {action['chat_id']}", flush=True)
+        elif action["type"] == "delete":
+            api_call("deleteMessage", {"chat_id": action["chat_id"], "message_id": action["message_id"]})
+            print(f"deleted message {action['message_id']} in {action['chat_id']}", flush=True)
+        elif action["type"] == "pin":
+            api_call("pinChatMessage", {"chat_id": action["chat_id"], "message_id": action["message_id"]})
+            print(f"pinned message {action['message_id']} in {action['chat_id']}", flush=True)
+        elif action["type"] == "unpin":
+            api_call("unpinChatMessage", {"chat_id": action["chat_id"]})
+            print(f"unpinned in {action['chat_id']}", flush=True)
+        elif action["type"] == "set_permissions":
+            api_call("setChatPermissions", {"chat_id": action["chat_id"], "permissions": action["permissions"]})
+            print(f"set chat permissions in {action['chat_id']}", flush=True)
+        time.sleep(0.3)
+
+
+def check_reminders(state):
+    now = int(time.time())
+    due = [r for r in state.get("reminders", []) if r["due"] <= now]
+    if not due:
+        return
+    for r in due:
+        try:
+            send_message(r["chat_id"], f"Reminder: {r['text']}")
+        except Exception as e:
+            print(f"failed to send reminder to {r['chat_id']}: {e}", flush=True)
+    state["reminders"] = [r for r in state.get("reminders", []) if r["due"] > now]
+    save_state(state)
+
+
+def poll_forever():
+    state = load_state()
+    print("Super bot polling started for @MuseVishnu_bot", flush=True)
+    while True:
+        write_heartbeat(state)
+        check_reminders(state)
+        try:
+            result = api_call("getUpdates", {"offset": state["offset"], "limit": 100, "timeout": 20}, timeout=35)
+        except urllib.error.HTTPError as e:
+            print(f"getUpdates HTTP {e.code}, retrying in 10s", flush=True)
+            time.sleep(10)
+            continue
+        except Exception as e:
+            print(f"getUpdates error {e}, retrying in 10s", flush=True)
+            time.sleep(10)
+            continue
+        if not result.get("ok"):
+            print(f"getUpdates not ok: {result}, retrying in 10s", flush=True)
+            time.sleep(10)
+            continue
+        for update in result.get("result", []):
+            state["offset"] = update["update_id"] + 1
+            save_state(state)
+            try:
+                actions = handle_update(update, state)
+                execute_actions(actions, state)
+                save_state(state)
+            except Exception as e:
+                print(f"error handling update {update.get('update_id')}: {e}", flush=True)
+
+
+def send_daily():
+    state = load_state()
+    today = phnom_penh_now().strftime("%Y-%m-%d")
+    if state["last_daily"] == today and (state["subscribers"] or state.get("channel_id")):
+        print(f"daily quote already sent for {today}", flush=True)
+        return 0
+    targets = list(state["subscribers"])
+    channel = state.get("channel_id")
+    if channel and channel not in targets:
+        targets.append(channel)
+    if not targets:
+        print("no daily subscribers or channel yet", flush=True)
+        return 0
+    quote = pick_quote("any", state)
+    path = make_quote_image(quote)
+    caption = channel_caption(quote, "daily")
+    sent = 0
+    try:
+        for chat_id in targets:
+            try:
+                send_photo(chat_id, path, caption=caption)
+                sent += 1
+            except Exception as e:
+                print(f"daily photo failed for {chat_id}: {e}, trying text", flush=True)
+                try:
+                    send_message(chat_id, caption)
+                    sent += 1
+                except Exception as e2:
+                    print(f"failed to send daily quote to {chat_id}: {e2}", flush=True)
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    state["last_daily"] = today
+    save_state(state)
+    print(f"daily quote sent to {sent} target(s)", flush=True)
+    return sent
+
+
+def send_news(title, summary, source=""):
+    """Post one researched news item to the channel. Used by Muse, not by the bot itself."""
+    state = load_state()
+    channel = state.get("channel_id")
+    if not channel:
+        print("no channel set for news", flush=True)
+        return 0
+    text = news_caption(title, summary, source)
+    result = send_message(channel, text)
+    print(f"news posted to {channel}: {result.get('ok')}", flush=True)
+    return 1 if result.get("ok") else 0
+
+
+def send_evening():
+    """Evening love quote to the channel only, 6pm schedule."""
+    state = load_state()
+    today = phnom_penh_now().strftime("%Y-%m-%d")
+    if state.get("last_evening") == today:
+        print(f"evening quote already sent for {today}", flush=True)
+        return 0
+    channel = state.get("channel_id")
+    if not channel:
+        print("no channel set for evening quote", flush=True)
+        return 0
+    quote = pick_quote("love", state)
+    path = make_quote_image(quote, kind="love")
+    try:
+        send_photo(channel, path, caption=channel_caption(quote, "love"))
+        print(f"evening quote sent to {channel}", flush=True)
+        sent = 1
+    except Exception as e:
+        print(f"evening photo failed: {e}, trying text", flush=True)
+        send_message(channel, channel_caption(quote, "love"))
+        sent = 1
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    state["last_evening"] = today
+    save_state(state)
+    return sent
+
+
+def run_tests():
+    state = load_state()
+    fake = [
+        {"update_id": 1, "message": {"chat": {"id": 111, "type": "private"}, "from": {"first_name": "Dailyquote"}, "text": "/start"}},
+        {"update_id": 2, "message": {"chat": {"id": 111, "type": "private"}, "text": "/quoteimg"}},
+        {"update_id": 3, "message": {"chat": {"id": 111, "type": "private"}, "text": "/setchannel @DailyQuotes"}},
+        {"update_id": 4, "message": {"chat": {"id": 111, "type": "private"}, "text": "/quiz"}},
+        {"update_id": 5, "message": {"chat": {"id": 111, "type": "private"}, "text": "/poll Do you like quotes? | Yes | No"}},
+        {"update_id": 6, "message": {"chat": {"id": 111, "type": "private"}, "text": "/remind 10m drink water"}},
+        {"update_id": 7, "message": {"chat": {"id": 111, "type": "private"}, "text": "/joke"}},
+        {"update_id": 8, "message": {"chat": {"id": 111, "type": "private"}, "text": "how are you?"}},
+        {"update_id": 9, "callback_query": {"id": "cb1", "data": "quote", "message": {"chat": {"id": 111, "type": "private"}}}},
+        {"update_id": 10, "poll_answer": {"poll_id": "test123", "user": {"id": 999, "first_name": "Test"}, "option_ids": [0]}},
+        {"update_id": 11, "message": {"chat": {"id": -100123, "type": "supergroup", "title": "Test Group"}, "from": {"id": 111, "first_name": "Dailyquote"}, "text": "/admins"}},
+        {"update_id": 12, "message": {"chat": {"id": -100123, "type": "supergroup"}, "from": {"id": 111, "first_name": "Dailyquote"}, "text": "/warn", "reply_to_message": {"message_id": 5, "from": {"id": 222, "first_name": "Spammer"}}}},
+        {"update_id": 13, "message": {"chat": {"id": -100123, "type": "supergroup"}, "from": {"id": 111, "first_name": "Dailyquote"}, "text": "/mute 10m", "reply_to_message": {"message_id": 6, "from": {"id": 222, "first_name": "Spammer"}}}},
+        {"update_id": 14, "message": {"chat": {"id": -100123, "type": "supergroup"}, "from": {"id": 111, "first_name": "Dailyquote"}, "text": "/setwelcome Welcome {name} to our group!"}},
+        {"update_id": 15, "message": {"chat": {"id": -100123, "type": "supergroup"}, "new_chat_members": [{"first_name": "Sophea"}]}},
+        {"update_id": 16, "message": {"chat": {"id": -100123, "type": "supergroup"}, "from": {"id": 111, "first_name": "Dailyquote"}, "text": "/antilink on"}},
+        {"update_id": 17, "message": {"chat": {"id": -100123, "type": "supergroup"}, "from": {"id": 333, "first_name": "Bad"}, "text": "check this https://spam.example"}},
+        {"update_id": 18, "message": {"chat": {"id": -100123, "type": "supergroup"}, "from": {"id": 111, "first_name": "Dailyquote"}, "text": "/lock"}},
+        {"update_id": 19, "message": {"chat": {"id": 111, "type": "private"}, "from": {"id": 111, "first_name": "Dailyquote"}, "text": "/ask what is the capital of Cambodia?"}},
+        {"update_id": 20, "message": {"chat": {"id": 111, "type": "private"}, "from": {"id": 111, "first_name": "Dailyquote"}, "text": "/ask what is 12+8"}},
+        {"update_id": 21, "message": {"chat": {"id": 111, "type": "private"}, "from": {"id": 111, "first_name": "Dailyquote"}, "text": "I am sad today"}},
+        {"update_id": 22, "message": {"chat": {"id": 111, "type": "private"}, "from": {"id": 111, "first_name": "Dailyquote"}, "text": "/stats"}},
+        {"update_id": 23, "message": {"chat": {"id": 111, "type": "private"}, "from": {"id": 111, "first_name": "Dailyquote"}, "text": "/mystats"}},
+        {"update_id": 24, "message": {"chat": {"id": 111, "type": "private"}, "from": {"id": 111, "first_name": "Dailyquote"}, "text": "/top"}},
+        {"update_id": 25, "message": {"chat": {"id": 111, "type": "private"}, "from": {"id": 111, "first_name": "Dailyquote"}, "text": "/ask what is the meaning of life?"}},
+        {"update_id": 26, "message": {"chat": {"id": 111, "type": "private"}, "from": {"id": 111, "first_name": "Dailyquote"}, "text": "/about"}},
+        {"update_id": 27, "message": {"chat": {"id": 111, "type": "private"}, "from": {"id": 111, "first_name": "Dailyquote"}, "text": "/channel"}},
+        {"update_id": 28, "message": {"chat": {"id": 111, "type": "private"}, "from": {"id": 111, "first_name": "Dailyquote"}, "text": "/postquote love"}},
+        {"update_id": 29, "message": {"chat": {"id": 111, "type": "private"}, "from": {"id": 111, "first_name": "Dailyquote"}, "text": "/news"}},
+        {"update_id": 30, "message": {"chat": {"id": 111, "type": "private"}, "from": {"id": 111, "first_name": "Dailyquote"}, "text": "/ainews"}},
+        {"update_id": 31, "message": {"chat": {"id": 111, "type": "private"}, "from": {"id": 111, "first_name": "Dailyquote"}, "text": "/freeai"}},
+        {"update_id": 32, "message": {"chat": {"id": 111, "type": "private"}, "from": {"id": 111, "first_name": "Dailyquote"}, "text": "/invite"}},
+        {"update_id": 33, "message": {"chat": {"id": 111, "type": "private"}, "from": {"id": 5039926430, "first_name": "Job Recruiter"}, "text": "/addinvite Muse TESTCODE"}},
+        {"update_id": 34, "message": {"chat": {"id": 111, "type": "private"}, "from": {"id": 111, "first_name": "Dailyquote"}, "text": "/postnews Test title | Test summary | Test source"}},
+        {"update_id": 35, "message": {"chat": {"id": 111, "type": "private"}, "from": {"id": 111, "first_name": "Dailyquote"}, "text": "/khmer"}},
+        {"update_id": 36, "message": {"chat": {"id": 111, "type": "private"}, "from": {"id": 5039926430, "first_name": "Job Recruiter"}, "text": "/addquote Be kind, always."}},
+        {"update_id": 37, "message": {"chat": {"id": 111, "type": "private"}, "from": {"id": 111, "first_name": "Dailyquote"}, "text": "/schedule"}},
+        {"update_id": 38, "message": {"chat": {"id": 111, "type": "private"}, "from": {"id": 111, "first_name": "Dailyquote"}, "text": "/quote"}},
+        {"update_id": 39, "message": {"chat": {"id": 111, "type": "private"}, "from": {"id": 111, "first_name": "Dailyquote"}, "text": "/khmerimg"}},
+        {"update_id": 40, "inline_query": {"id": "iq-test-1", "from": {"id": 111, "first_name": "Dailyquote"}, "query": "love", "offset": ""}},
+        {"update_id": 41, "inline_query": {"id": "iq-test-2", "from": {"id": 111, "first_name": "Dailyquote"}, "query": "", "offset": ""}},
+        {"update_id": 42, "message": {"chat": {"id": 111, "type": "private"}, "from": {"id": 111, "first_name": "Dailyquote"}, "text": "/guess"}},
+        {"update_id": 43, "message": {"chat": {"id": 111, "type": "private"}, "from": {"id": 111, "first_name": "Dailyquote"}, "text": "50"}},
+        {"update_id": 44, "message": {"chat": {"id": 111, "type": "private"}, "from": {"id": 111, "first_name": "Dailyquote"}, "text": "/rps"}},
+        {"update_id": 45, "callback_query": {"id": "cb-rps", "data": "rps:rock", "message": {"chat": {"id": 111, "type": "private"}}}},
+        {"update_id": 46, "message": {"chat": {"id": 111, "type": "private"}, "from": {"id": 111, "first_name": "Dailyquote"}, "text": "/dice"}},
+        {"update_id": 47, "message": {"chat": {"id": 111, "type": "private"}, "from": {"id": 111, "first_name": "Dailyquote"}, "text": "/slots"}},
+        {"update_id": 48, "message": {"chat": {"id": 111, "type": "private"}, "from": {"id": 111, "first_name": "Dailyquote"}, "text": "/scramble"}},
+        {"update_id": 49, "message": {"chat": {"id": 111, "type": "private"}, "from": {"id": 111, "first_name": "Dailyquote"}, "text": "wrongword"}},
+        {"update_id": 50, "message": {"chat": {"id": 111, "type": "private"}, "from": {"id": 111, "first_name": "Dailyquote"}, "text": "/menu"}},
+        {"update_id": 51, "message": {"chat": {"id": 111, "type": "private"}, "from": {"id": 111, "first_name": "Dailyquote"}, "text": "💬 Quote"}},
+        {"update_id": 52, "message": {"chat": {"id": 111, "type": "private"}, "from": {"id": 111, "first_name": "Dailyquote"}, "text": "🎮 Games"}},
+        {"update_id": 53, "message": {"chat": {"id": 111, "type": "private"}, "from": {"id": 111, "first_name": "Dailyquote"}, "text": "🎯 Quiz"}},
+        {"update_id": 54, "message": {"chat": {"id": 111, "type": "private"}, "from": {"id": 111, "first_name": "Dailyquote"}, "text": "/hidemenu"}},
+    ]
+    for update in fake:
+        actions = handle_update(update, state, dry_run=True)
+        print(f"update {update['update_id']}: {actions}")
+    # Image generation test
+    path = make_quote_image("Test quote for the super bot.")
+    print(f"quote image created: {path} size={os.path.getsize(path)} bytes")
+    os.remove(path)
+    # Khmer image test: must use Noto Sans Khmer, not boxes (DejaVu has no Khmer glyphs)
+    khmer_path = make_quote_image(KHMER_QUOTES[0])
+    print(f"khmer image created: {khmer_path} size={os.path.getsize(khmer_path)} bytes")
+    os.remove(khmer_path)
+    print(f"channel: {state.get('channel_id')}, reminders: {len(state.get('reminders', []))}, subscribers: {state['subscribers']}")
+    print("TEST OK - all steps produced actions")
+    return 0
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--daily", action="store_true")
+    parser.add_argument("--evening", action="store_true")
+    parser.add_argument("--design", action="store_true")
+    parser.add_argument("--setup-channel", dest="setup_channel", default="")
+    parser.add_argument("--setup-bot", dest="setup_bot", default="")
+    parser.add_argument("--story", action="store_true")
+    parser.add_argument("--setup-menu", dest="setup_menu", action="store_true")
+    parser.add_argument("--post-news", dest="post_news", default="")
+    parser.add_argument("--test", action="store_true")
+    args = parser.parse_args()
+    if args.test:
+        return run_tests()
+    if args.daily:
+        return send_daily()
+    if args.evening:
+        return send_evening()
+    if args.design:
+        return 0 if send_design() else 1
+    if args.setup_channel:
+        return 0 if set_channel_info(args.setup_channel) else 1
+    if args.setup_bot:
+        return 0 if set_bot_profile(args.setup_bot) else 1
+    if args.story:
+        return 0 if send_story() else 1
+    if args.setup_menu:
+        return 0 if set_bot_commands() else 1
+    if args.post_news:
+        parts = [p.strip() for p in args.post_news.split("|")]
+        if len(parts) < 2:
+            print("usage: --post-news 'Title | Summary | Source'", flush=True)
+            return 2
+        return 0 if send_news(parts[0], parts[1], parts[2] if len(parts) > 2 else "") else 1
+    poll_forever()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

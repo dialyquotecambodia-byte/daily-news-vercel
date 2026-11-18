@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Secrets and local state — never commit these
+.env
+state.json
+state.json.tmp
+heartbeat.json
+heartbeat.json.tmp
+
+# Vercel
+.vercel
+
+# OS
+.DS_Store
+Thumbs.db
