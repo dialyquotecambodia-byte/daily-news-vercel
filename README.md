@@ -415,6 +415,18 @@ Dry-run suite: 54 + 35 + 20 + 15 + 6 + 17 + 12 + 18 + 26 + 10 Phase 8 checks, al
 
 Dry-run suite: 54 + 35 + 20 + 15 + 6 + 17 + 12 + 18 + 26 + 10 + 6 Phase 9 checks, all passing; webhook/cron harnesses still 25/25 + 20/20.
 
+## Phase 9 — Pro & money: Stars shop, sponsored posts, analytics (2026-11-19)
+
+- **/shop** — a Stars shop with tap-to-buy buttons (callback `buy:<item>` sends the invoice): ⚡ **XP Boost — 50 Stars** (double XP for 24 hours), 🎨 **Custom quote image — 30 Stars** (one credit), ⭐ **Premium — 150 Stars** (lifetime). Payments use payloads `shop_boost_<uid>`, `shop_custom_<uid>`, `shop_premium_<uid>`; the `successful_payment` handler grants the item and records revenue in `shop_revenue` {stars, sales}.
+- **/customquote <your words>** — spends one custom-image credit and generates a quote image with the user's own text (Khmer font detection included). Refused without a credit.
+- **XP Boost stacking** — `xp_amount` now multiplies: Premium ×2, active boost ×2, both together ×4. Boosts live in state `boosts` (uid → {until}); `custom_credits` and `sponsored_posts` are new state keys too.
+- **/sponsor <message>** (owner only) — posts a "📣 Sponsored" message to the channel and records it in `sponsored_posts`.
+- **/analytics** (owner only) — users, messages, quotes, images, quizzes, Premium, subscribers, XP players, referrals, shop sales/Stars, sponsored posts, and the top 5 commands.
+- **/api/stats** now also returns `shop_stars`, `shop_sales` and `sponsored` (verified live: all 0 until the first sale).
+- New commands: `/shop`, `/customquote`, `/sponsor`, `/analytics`. To keep the menu at 100, `/antiraid`, `/cleanservice`, `/antichannel` (all in the /settings panel) and `/boost` were hidden from the menu — they still work. **112 commands work in total**, menu shows 100.
+
+Dry-run suite: 54 + 35 + 20 + 15 + 6 + 17 + 12 + 18 + 26 + 10 + 6 + 13 Phase 10 checks, all passing; webhook/cron harnesses still 25/25 + 20/20.
+
 ## Free-tier limits that matter
 
 - **Vercel Hobby functions:** default max 10s per invocation; `vercel.json`
