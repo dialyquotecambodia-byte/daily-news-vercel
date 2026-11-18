@@ -466,6 +466,7 @@ NEWS_TEXT = (
 
 
 OWNER_ID = 5039926430
+BOT_ID = 9085916191  # @MuseVishnu_bot (public id, not a secret)
 
 
 def news_caption(title, summary, source=""):
@@ -764,6 +765,17 @@ def is_admin(chat_id, user_id, dry_run=False):
         if (admin.get("user") or {}).get("id") == user_id:
             return True
     return False
+
+
+def bot_is_admin(chat_id, dry_run=False):
+    """Is this bot an admin in the group? Used to tell the user to promote the bot instead of the misleading 'only admins' error."""
+    if dry_run:
+        return True
+    try:
+        result = api_call("getChatMember", {"chat_id": chat_id, "user_id": BOT_ID})
+    except Exception:
+        return False
+    return (result.get("result") or {}).get("status") in ("administrator", "creator")
 
 
 def target_user(message, args):
@@ -2326,7 +2338,10 @@ def handle_update(update, state, dry_run=False):
         if chat_type not in ("group", "supergroup") and not connected_group:
             reply("Admin commands only work in a group. Add me to a group and make me an admin, or connect to one with /connect.")
         elif not is_admin(gchat, sender_id, dry_run=dry_run):
-            reply("Only group admins can use that command.")
+            if not dry_run and not bot_is_admin(gchat, dry_run=dry_run):
+                reply("I need to be an admin in this group first — make me an admin (Group settings → Administrators → add @MuseVishnu_bot), then try again.")
+            else:
+                reply("Only group admins can use that command.")
         elif command == "/setwelcome":
             get_group_settings(state, gchat)["welcome"] = args
             reply(f"Welcome message saved. Use {{name}} for the new member's name.\n\n{args}" if args else "Tell me the welcome text, like /setwelcome Welcome {name}!")
@@ -4191,6 +4206,9 @@ def run_tests():
     check7("fsub check runs for non-members", any(x.get("type") == "fsub_check" and x.get("channel") == "@DailyNewsReporter" for x in a))
     a = handle_update({"update_id": 825, "message": {"chat": group, "from": admin, "text": "/fsub off"}}, state, dry_run=True)
     check7("fsub turns off", state.get("group_settings", {}).get("-100123", {}).get("fsub") == "")
+    # Non-admins get the plain "only admins" reply (the bot itself is admin in dry-run, so no promote hint).
+    a = handle_update({"update_id": 826, "message": {"chat": group, "from": spammer, "text": "/lock sticker"}}, state, dry_run=True)
+    check7("non-admin gets the admin-only reply", any("Only group admins" in t for t in texts(a)))
     print(f"phase 7 checks: {len(fails)} failures")
     if fails:
         print("FAILED: " + "; ".join(fails))
