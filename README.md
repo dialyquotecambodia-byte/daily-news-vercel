@@ -415,6 +415,18 @@ Dry-run suite: 54 + 35 + 20 + 15 + 6 + 17 + 12 + 18 + 26 + 10 Phase 8 checks, al
 
 Dry-run suite: 54 + 35 + 20 + 15 + 6 + 17 + 12 + 18 + 26 + 10 + 6 Phase 9 checks, all passing; webhook/cron harnesses still 25/25 + 20/20.
 
+## Smart Pack — smarter AI + more group power (2026-11-19)
+
+- **AI conversation memory** — `ai_reply` now keeps the last 3 exchanges per user in `ai_history` and passes them to the AI (OpenAI chat messages, or a transcript for the free Pollinations API), so the bot can follow up instead of answering each message cold.
+- **AI in groups** — the bot now answers in groups when it is mentioned (`@MuseVishnu_bot ...`) or when someone replies to one of its messages. Plain group messages still get the short thanks reply, so the bot doesn't chatter.
+- **/summarize** — reply to a message (or pass text) and the AI sums it up in 3 bullets.
+- **/aiquiz [topic]** — the AI writes a fresh quiz question on any topic (strict JSON parse with a fallback to a normal quiz question when the AI's reply doesn't parse).
+- **/afk [reason]** — away mode: replies to or mentions of an AFK user get a "💤 X is AFK: reason" notice (username mentions resolved via the user record, which now stores `username`); sending any message clears AFK with a welcome-back note.
+- **/autodel on|off** (admin) — deletes non-admin command messages after the bot replies, keeping the group clean. It's a group setting (backed up/restored, toggle in the /settings panel).
+- New commands: `/summarize`, `/aiquiz`, `/afk`, `/autodel`. To keep the menu at 100, `/digest`, `/topreferrers` and `/check` were hidden from the menu — they still work. **116 commands work in total**, menu shows 100.
+
+Dry-run suite: 54 + 35 + 20 + 15 + 6 + 17 + 12 + 18 + 26 + 10 + 6 + 13 + 16 Phase 11 checks, all passing; webhook/cron harnesses still 25/25 + 20/20.
+
 ## Phase 9 — Pro & money: Stars shop, sponsored posts, analytics (2026-11-19)
 
 - **/shop** — a Stars shop with tap-to-buy buttons (callback `buy:<item>` sends the invoice): ⚡ **XP Boost — 50 Stars** (double XP for 24 hours), 🎨 **Custom quote image — 30 Stars** (one credit), ⭐ **Premium — 150 Stars** (lifetime). Payments use payloads `shop_boost_<uid>`, `shop_custom_<uid>`, `shop_premium_<uid>`; the `successful_payment` handler grants the item and records revenue in `shop_revenue` {stars, sales}.
