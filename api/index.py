@@ -25,6 +25,7 @@ Routes:
 - GET  /api/post-news    health check
 - POST /api/post-news    post one AI news item (Bearer CRON_SECRET)
 - GET  /api/leaderboard  public XP leaderboard + top streaks (JSON)
+- GET  /api/stats        public bot stats for the Mini App (JSON)
 
 No polling loop runs on Vercel: reminders are delivered on the next
 incoming update (check_reminders runs inside the webhook handler).
@@ -58,12 +59,32 @@ def leaderboard_get():
         print(f"leaderboard error: {e}", flush=True)
         return {"ok": False, "error": str(e)}, 500
     xp = state.get("xp", {})
-    ranked = sorted(xp.values(), key=lambda r: r.get("xp", 0), reverse=True)[:10]
-    board = [{"name": r.get("name", "friend"), "xp": r.get("xp", 0), "level": sb.xp_level(r.get("xp", 0))} for r in ranked]
+    ranked = sorted(xp.items(), key=lambda kv: kv[1].get("xp", 0), reverse=True)[:10]
+    board = [{"name": r.get("name", "friend"), "xp": r.get("xp", 0), "level": sb.xp_level(r.get("xp", 0)), "premium": k in state.get("premium", {})} for k, r in ranked]
     streaks = state.get("streaks", {})
     top_streaks = sorted(streaks.values(), key=lambda s: s.get("count", 0), reverse=True)[:5]
     streak_board = [{"name": s.get("name", "friend"), "days": s.get("count", 0)} for s in top_streaks]
     return {"ok": True, "leaderboard": board, "streaks": streak_board}, 200
+
+
+def stats_get():
+    try:
+        state = sb.load_state()
+    except Exception as e:
+        print(f"stats error: {e}", flush=True)
+        return {"ok": False, "error": str(e)}, 500
+    stats = state.get("stats", {})
+    return {"ok": True, "stats": {
+        "users": len(state.get("users", {})),
+        "messages": stats.get("messages", 0),
+        "quotes_sent": stats.get("quotes_sent", 0),
+        "photos_sent": stats.get("photos_sent", 0),
+        "quizzes_sent": stats.get("quizzes_sent", 0),
+        "premium": len(state.get("premium", {})),
+        "subscribers": len(state.get("subscribers", [])),
+        "xp_players": len(state.get("xp", {})),
+        "referrals": sum(r.get("count", 0) for r in state.get("referrals", {}).values()),
+    }}, 200
 
 
 def _err(code, message):
@@ -147,6 +168,7 @@ ROUTES = {
     "cron-evening": {"GET": cron_evening, "POST": cron_evening},
     "post-news": {"GET": post_news_get, "POST": post_news_post},
     "leaderboard": {"GET": leaderboard_get},
+    "stats": {"GET": stats_get},
 }
 
 
@@ -181,6 +203,11 @@ def post_news_route():
 @app.route("/api/leaderboard", methods=["GET"])
 def leaderboard_route():
     return _dispatch("leaderboard")
+
+
+@app.route("/api/stats", methods=["GET"])
+def stats_route():
+    return _dispatch("stats")
 
 
 @app.route("/", methods=["GET"])

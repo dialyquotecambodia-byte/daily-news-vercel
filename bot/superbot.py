@@ -340,7 +340,11 @@ HELP_TEXT = (
     "/check — reply to a message, AI says if it's spam, scam, abuse or harmless\n"
     "/aimod on — AI checks link messages from non-admins and deletes the bad ones\n"
     "/setlog @Channel — log bans, mutes, warns, fbans and purges there\n"
-    "/backup — group settings as JSON, /restore to bring them back"
+    "/backup — group settings as JSON, /restore to bring them back\n\n"
+    "Growth & Premium\n"
+    "/referral — your invite link, friends get +20 XP, you get +50 XP each\n"
+    "/topreferrers — who invited the most friends\n"
+    "/premium — 150 Stars for lifetime Premium: double XP and a ⭐ badge"
     "\n\nInline: type @MuseVishnu_bot in any chat to send a quote, the Mini App or the channel."
 )
 
@@ -543,6 +547,9 @@ def load_state():
     state.setdefault("tournaments", {})
     state.setdefault("tournament_polls", {})
     state.setdefault("log_channels", {})
+    state.setdefault("referrals", {})
+    state.setdefault("referred_by", {})
+    state.setdefault("premium", {})
     state.setdefault("users", {})
     state.setdefault("questions", [])
     state.setdefault("invite_codes", [])
@@ -1223,6 +1230,9 @@ BOT_COMMANDS = [
     ("setlog", "Set the moderation log channel"),
     ("backup", "Back up group settings"),
     ("restore", "Restore group settings"),
+    ("referral", "Invite friends, earn XP"),
+    ("topreferrers", "Top inviters"),
+    ("premium", "Premium with Telegram Stars"),
 ]
 
 
@@ -1512,14 +1522,19 @@ def xp_for_next_level(level):
     return 50 * level * level
 
 
+def xp_amount(state, uid, base):
+    """Premium members earn double XP."""
+    return base * 2 if str(uid) in state.get("premium", {}) else base
+
+
 def award_xp(state, uid, name, amount):
-    """Add XP; return the new level if the user just levelled up, else None."""
+    """Add XP (doubled for Premium members); return the new level if the user just levelled up, else None."""
     if not uid:
         return None
     rec = state.setdefault("xp", {}).setdefault(str(uid), {"xp": 0, "name": name or "friend", "last_msg": 0})
     rec["name"] = name or rec.get("name", "friend")
     before = xp_level(rec["xp"])
-    rec["xp"] += amount
+    rec["xp"] += xp_amount(state, uid, amount)
     after = xp_level(rec["xp"])
     return after if after > before else None
 
@@ -1540,6 +1555,16 @@ def xp_record(state, uid):
     return state.get("xp", {}).get(str(uid), {"xp": 0, "name": "friend"})
 
 
+def referral_code(state, uid, name):
+    """Each user's permanent invite code, created once and stored."""
+    rec = state.setdefault("referrals", {}).setdefault(str(uid), {"code": "", "count": 0, "referred": [], "name": name or "friend"})
+    if not rec.get("code"):
+        alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+        rec["code"] = "DN" + "".join(random.choice(alphabet) for _ in range(6))
+    rec["name"] = name or rec.get("name", "friend")
+    return rec["code"]
+
+
 def rank_text(state, uid, name):
     rec = xp_record(state, uid)
     xp = rec["xp"]
@@ -1548,8 +1573,9 @@ def rank_text(state, uid, name):
     ranked = sorted(state.get("xp", {}).items(), key=lambda kv: kv[1]["xp"], reverse=True)
     rank = next((i + 1 for i, (k, _v) in enumerate(ranked) if k == str(uid)), len(ranked))
     streak = state.get("streaks", {}).get(str(uid), {"count": 0})
+    premium = " ⭐ Premium" if str(uid) in state.get("premium", {}) else ""
     return (
-        f"🏆 {name}'s rank\n\n"
+        f"🏆 {name}'s rank{premium}\n\n"
         f"⭐ Level {level} — {xp} XP\n"
         f"Next level: {nxt - xp} XP to go (Level {level + 1} at {nxt} XP)\n"
         f"Global rank: #{rank} of {len(ranked)}\n"
@@ -1561,12 +1587,13 @@ def leaderboard_text(state):
     xp = state.get("xp", {})
     if not xp:
         return "No XP yet. Chat, play games and answer quizzes to earn XP! /checkin gives +20 XP every day."
-    ranked = sorted(xp.values(), key=lambda r: r["xp"], reverse=True)[:10]
+    ranked = sorted(xp.items(), key=lambda kv: kv[1]["xp"], reverse=True)[:10]
     lines = ["🏆 XP Leaderboard\n"]
     medals = ["🥇", "🥈", "🥉"]
-    for i, r in enumerate(ranked):
+    for i, (k, r) in enumerate(ranked):
         medal = medals[i] if i < 3 else f"{i + 1}."
-        lines.append(f"{medal} {r.get('name', 'friend')} — Level {xp_level(r['xp'])} ({r['xp']} XP)")
+        star = " ⭐" if k in state.get("premium", {}) else ""
+        lines.append(f"{medal} {r.get('name', 'friend')}{star} — Level {xp_level(r['xp'])} ({r['xp']} XP)")
     streaks = state.get("streaks", {})
     if streaks:
         top_streak = sorted(streaks.values(), key=lambda s: s.get("count", 0), reverse=True)[:5]
@@ -1681,7 +1708,8 @@ def handle_update(update, state, dry_run=False):
             if correct:
                 score["correct"] += 1
                 leveled = award_xp(state, user.get("id"), user.get("first_name", "Player"), 10)
-                msg = f"Correct, {score['name']}! {quiz.get('explain', '')} Your score: {score['correct']}/{score['total']} (+10 XP)"
+                amt = xp_amount(state, user.get("id"), 10)
+                msg = f"Correct, {score['name']}! {quiz.get('explain', '')} Your score: {score['correct']}/{score['total']} (+{amt} XP)"
                 if leveled:
                     msg += f"\n🎉 LEVEL UP! You are now Level {leveled}!"
                 actions.append({"type": "text", "chat_id": quiz["chat_id"], "text": msg})
@@ -1700,7 +1728,7 @@ def handle_update(update, state, dry_run=False):
                         winner_uid = max(t["players"], key=lambda k: t["players"][k]["score"])
                         winner = t["players"][winner_uid]
                         award_xp(state, winner_uid, winner["name"], 50)
-                        actions.append({"type": "text", "chat_id": tchat, "text": f"🏆 Tournament over!\n\n{tournament_standings(t)}\n\nWinner: {winner['name']} — +50 XP!"})
+                        actions.append({"type": "text", "chat_id": tchat, "text": f"🏆 Tournament over!\n\n{tournament_standings(t)}\n\nWinner: {winner['name']} — +{xp_amount(state, winner_uid, 50)} XP!"})
                         for pid in list(t.get("done_polls", [])):
                             state.get("tournament_polls", {}).pop(pid, None)
                         state.get("tournaments", {}).pop(str(tchat), None)
@@ -1709,6 +1737,12 @@ def handle_update(update, state, dry_run=False):
                         q = random.choice(QUIZ_QUESTIONS)
                         actions.append({"type": "text", "chat_id": tchat, "text": f"✅ {player['name']} got it! +1 point (Round {t['round'] - 1}/{t['total']}).\n\n{tournament_standings(t)}\n\nNext question — Round {t['round']}:"})
                         actions.append({"type": "quiz", "chat_id": tchat, "question": q, "tournament": True})
+        return actions
+
+    # Telegram Stars pre-checkout: approve every payment.
+    if "pre_checkout_query" in update:
+        pcq = update["pre_checkout_query"]
+        actions.append({"type": "precheckout", "query_id": pcq.get("id"), "ok": True})
         return actions
 
     # Inline button taps
@@ -1750,7 +1784,7 @@ def handle_update(update, state, dry_run=False):
                 winner_id = (cb.get("from") or {}).get("id")
                 leveled = award_xp(state, winner_id, (cb.get("from") or {}).get("first_name", "Player"), 5)
                 if leveled:
-                    actions.append({"type": "text", "chat_id": chat_id, "text": f"🎉 LEVEL UP! You are now Level {leveled}! (+5 XP for the win)"})
+                    actions.append({"type": "text", "chat_id": chat_id, "text": f"🎉 LEVEL UP! You are now Level {leveled}! (+{xp_amount(state, winner_id, 5)} XP for the win)"})
         elif data.startswith("verify:"):
             # Captcha button: only the new member themself can tap it.
             parts = data.split(":")
@@ -1832,6 +1866,18 @@ def handle_update(update, state, dry_run=False):
             settings = get_group_settings(state, chat_id)
             if not is_admin(chat_id, _sid, dry_run=dry_run) and sticker.get("file_unique_id") in settings.get("blacklist_stickers", []):
                 actions.append({"type": "delete", "chat_id": chat_id, "message_id": message.get("message_id")})
+        return actions
+
+    # Telegram Stars payment completed: unlock Premium.
+    if message.get("successful_payment"):
+        pay = message["successful_payment"]
+        buyer = message.get("from") or {}
+        buyer_id = buyer.get("id")
+        if pay.get("invoice_payload", "").startswith("premium_") and buyer_id:
+            # Welcome bonus first (flat +50), then unlock Premium (double XP after).
+            award_xp(state, buyer_id, buyer.get("first_name", "friend"), 50)
+            state.setdefault("premium", {})[str(buyer_id)] = {"since": int(time.time()), "stars": pay.get("total_amount", 0)}
+            actions.append({"type": "text", "chat_id": chat_id, "text": "⭐ Welcome to Premium! Lifetime access unlocked: double XP, a ⭐ badge, and early access to new features. Thank you for supporting Daily News! (+50 XP)"})
         return actions
 
     text = (message.get("text") or "").strip()
@@ -1922,7 +1968,23 @@ def handle_update(update, state, dry_run=False):
 
     if command == "/start":
         first = (message.get("from") or {}).get("first_name", "friend")
-        reply(f"Hi {first}, welcome to Daily News.\n\n{HELP_TEXT}", keyboard=start_keyboard())
+        my_code = referral_code(state, sender_id, first)
+        extra = ""
+        if args.startswith("ref_"):
+            code = args[4:].strip()
+            ref_uid = next((k for k, v in state.get("referrals", {}).items() if v.get("code") == code), None)
+            if ref_uid and ref_uid != str(sender_id) and str(sender_id) not in state.get("referred_by", {}) and user_record and user_record.get("messages", 0) <= 1:
+                state.setdefault("referred_by", {})[str(sender_id)] = ref_uid
+                ref_rec = state["referrals"][ref_uid]
+                ref_rec.setdefault("referred", []).append(str(sender_id))
+                ref_rec["count"] = len(ref_rec["referred"])
+                amt_ref = xp_amount(state, ref_uid, 50)
+                amt_new = xp_amount(state, sender_id, 20)
+                award_xp(state, ref_uid, ref_rec.get("name", "friend"), 50)
+                award_xp(state, sender_id, first, 20)
+                extra = f"\n\n🎉 You joined through {ref_rec.get('name', 'a friend')}'s invite! You got +{amt_new} XP and they got +{amt_ref} XP."
+                actions.append({"type": "text", "chat_id": int(ref_uid), "text": f"🎉 {first} joined with your invite! +{amt_ref} XP. You have invited {ref_rec['count']} friend(s)."})
+        reply(f"Hi {first}, welcome to Daily News.\n\n{HELP_TEXT}\n\n🔗 Invite friends, earn XP: https://t.me/MuseVishnu_bot?start=ref_{my_code} (see /referral){extra}", keyboard=start_keyboard())
     elif command == "/help":
         reply(HELP_TEXT)
     elif command == "/about":
@@ -2452,7 +2514,8 @@ def handle_update(update, state, dry_run=False):
                 st["count"] = 1
             st["last"] = today
             leveled = award_xp(state, sender_id, sender.get("first_name", "friend"), 20)
-            msg = f"✅ Checked in! +20 XP\n🔥 Streak: {st['count']} day(s) — keep it alive tomorrow!"
+            amt = xp_amount(state, sender_id, 20)
+            msg = f"✅ Checked in! +{amt} XP\n🔥 Streak: {st['count']} day(s) — keep it alive tomorrow!"
             if leveled:
                 msg += f"\n\n🎉 LEVEL UP! You are now Level {leveled}!"
             reply(msg)
@@ -2483,7 +2546,7 @@ def handle_update(update, state, dry_run=False):
                 winner_uid = max(t["players"], key=lambda k: t["players"][k]["score"])
                 winner = t["players"][winner_uid]
                 award_xp(state, winner_uid, winner["name"], 50)
-                reply(f"🏆 Tournament ended early!\n\n{tournament_standings(t)}\n\nWinner: {winner['name']} — +50 XP!")
+                reply(f"🏆 Tournament ended early!\n\n{tournament_standings(t)}\n\nWinner: {winner['name']} — +{xp_amount(state, winner_uid, 50)} XP!")
             else:
                 reply("Tournament ended — no scores yet. Start a new one with /tournament!")
             for pid in list(t.get("done_polls", [])):
@@ -2570,6 +2633,33 @@ def handle_update(update, state, dry_run=False):
                 for k in restored:
                     settings[k] = data[k]
                 reply(f"Restored {len(restored)} setting(s): {', '.join(restored)}." if restored else "Nothing to restore — the backup had no settings I know.")
+    elif command == "/referral":
+        code = referral_code(state, sender_id, sender.get("first_name", "friend"))
+        rec = state["referrals"][str(sender_id)]
+        amt = xp_amount(state, sender_id, 50)
+        reply(
+            f"🔗 Your invite link\n\nhttps://t.me/MuseVishnu_bot?start=ref_{code}\n\n"
+            f"Friends who join with it get +20 XP, you get +{amt} XP each.\n"
+            f"You have invited {rec.get('count', 0)} friend(s).\n"
+            f"Top inviters: /topreferrers"
+        )
+    elif command == "/topreferrers":
+        refs = state.get("referrals", {})
+        ranked = sorted(refs.values(), key=lambda r: r.get("count", 0), reverse=True)[:5]
+        if not ranked or max(r.get("count", 0) for r in ranked) == 0:
+            reply("No referrals yet. Get your link with /referral and share it!")
+        else:
+            lines = ["🔗 Top inviters:\n"]
+            lines.extend(f"{i + 1}. {r.get('name', 'friend')} — {r.get('count', 0)} friend(s)" for i, r in enumerate(ranked) if r.get("count", 0) > 0)
+            reply("\n".join(lines))
+    elif command == "/premium":
+        prem = state.get("premium", {}).get(str(sender_id))
+        if prem:
+            since = datetime.datetime.fromtimestamp(prem.get("since", int(time.time())), tz=datetime.timezone(datetime.timedelta(hours=7))).strftime("%d %b %Y")
+            reply(f"⭐ You are Premium since {since}!\n\nPerks: double XP on everything, a ⭐ badge in /rank and /leaderboard, and early access to new features.\n\nThank you for supporting Daily News!")
+        else:
+            reply("⭐ Daily News Premium — 150 Stars, lifetime.\n\nPerks: double XP on everything, a ⭐ badge in /rank and /leaderboard, and early access to new features.\n\nTap below to pay with Telegram Stars.")
+            actions.append({"type": "invoice", "chat_id": chat_id, "title": "Daily News Premium", "description": "Lifetime Premium: double XP, a ⭐ badge, and early access to new features.", "payload": f"premium_{sender_id}", "currency": "XTR", "prices": [{"label": "Premium", "amount": 150}], "keyboard": {"inline_keyboard": [[{"text": "⭐ Pay 150 Stars", "pay": True}]]}})
     elif command == "/info":
         title = chat.get("title") or chat.get("first_name") or "this chat"
         reply(f"This is {title} (chat id {chat_id}, type {chat.get('type')}). I'm @MuseVishnu_bot.")
@@ -2621,7 +2711,7 @@ def handle_update(update, state, dry_run=False):
                     reply(f"🎉 Correct! The number was {game['number']}. You got it in {game['attempts']} tries! Play again with /guess.")
                     _lvl = award_xp(state, sender_id, sender.get("first_name", "friend"), 15)
                     if _lvl:
-                        reply(f"🎉 LEVEL UP! You are now Level {_lvl}! (+15 XP for the win)")
+                        reply(f"🎉 LEVEL UP! You are now Level {_lvl}! (+{xp_amount(state, sender_id, 15)} XP for the win)")
                     del games[key]
                 elif guess < game["number"]:
                     reply(f"Too low! Try a bigger number. (Attempt {game['attempts']})")
@@ -2754,7 +2844,7 @@ def handle_update(update, state, dry_run=False):
             reply(f"🎉 Correct! The number was {game['number']}. You got it in {game['attempts']} tries! Play again with /guess.")
             _lvl = award_xp(state, sender_id, sender.get("first_name", "friend"), 15)
             if _lvl:
-                reply(f"🎉 LEVEL UP! You are now Level {_lvl}! (+15 XP for the win)")
+                reply(f"🎉 LEVEL UP! You are now Level {_lvl}! (+{xp_amount(state, sender_id, 15)} XP for the win)")
             del state["guess_games"][str(chat_id)]
         elif guess < game["number"]:
             reply(f"Too low! Try a bigger number. (Attempt {game['attempts']})")
@@ -2766,7 +2856,7 @@ def handle_update(update, state, dry_run=False):
             reply(f"🎉 Correct! The word was {game['word'].upper()}. Play again with /scramble.")
             _lvl = award_xp(state, sender_id, sender.get("first_name", "friend"), 10)
             if _lvl:
-                reply(f"🎉 LEVEL UP! You are now Level {_lvl}! (+10 XP for the win)")
+                reply(f"🎉 LEVEL UP! You are now Level {_lvl}! (+{xp_amount(state, sender_id, 10)} XP for the win)")
             del state["scramble_games"][str(chat_id)]
         else:
             reply(f"Not quite — the scrambled word is {game['scrambled']}. Try again!")
@@ -2918,6 +3008,16 @@ def execute_actions(actions, state):
                 api_call("editMessageText", payload)
             except Exception as e:
                 print(f"editMessageText failed: {e}", flush=True)
+        elif action["type"] == "invoice":
+            # Telegram Stars: provider_token must be empty for XTR.
+            payload = {"chat_id": action["chat_id"], "title": action["title"], "description": action["description"], "payload": action["payload"], "provider_token": "", "currency": action.get("currency", "XTR"), "prices": action["prices"]}
+            if action.get("keyboard"):
+                payload["reply_markup"] = action["keyboard"]
+            api_call("sendInvoice", payload)
+            print(f"sent invoice to {action['chat_id']}", flush=True)
+        elif action["type"] == "precheckout":
+            api_call("answerPreCheckoutQuery", {"pre_checkout_query_id": action["query_id"], "ok": action.get("ok", True)})
+            print(f"answered pre-checkout {action['query_id']}", flush=True)
         time.sleep(0.3)
 
 
@@ -3373,6 +3473,61 @@ def run_tests():
     a = handle_update({"update_id": 405, "message": {"chat": dm, "from": player, "text": "Can you write Khmer"}}, state, dry_run=True)
     check3b("can you write khmer switches language", state.get("users", {}).get("777", {}).get("lang") == "kh")
     print(f"phase 3b checks: {len(fails)} failures")
+    if fails:
+        print("FAILED: " + "; ".join(fails))
+        return 1
+
+    # Phase 4 (growth & Premium: referrals, Stars, double XP) tests.
+    fails = []
+    def check4(label, cond):
+        print(("PASS " if cond else "FAIL ") + label)
+        if not cond:
+            fails.append(label)
+    newbie = {"id": 888, "first_name": "Newbie"}
+    dm888 = {"id": 888, "type": "private"}
+
+    # /referral issues a link with a DN code.
+    a = handle_update({"update_id": 501, "message": {"chat": dm, "from": player, "text": "/referral"}}, state, dry_run=True)
+    code = state.get("referrals", {}).get("777", {}).get("code", "")
+    check4("referral issues a DN code", code.startswith("DN") and len(code) == 8)
+    check4("referral link contains the code", any(f"start=ref_{code}" in t for t in texts(a)))
+
+    # New user joins through the link: referrer +50, new user +20, counted once.
+    a = handle_update({"update_id": 502, "message": {"chat": dm888, "from": newbie, "text": f"/start ref_{code}"}}, state, dry_run=True)
+    check4("referral recorded", state.get("referred_by", {}).get("888") == "777")
+    check4("referrer count is 1", state.get("referrals", {}).get("777", {}).get("count") == 1)
+    check4("referrer got +50 XP", state.get("xp", {}).get("777", {}).get("xp") == 107)
+    check4("new user got +20 XP", state.get("xp", {}).get("888", {}).get("xp") == 22)  # +20 referral, +2 for the /start message itself
+    check4("welcome mentions the invite", any("You joined through" in t for t in texts(a)))
+    check4("referrer is notified", any(x.get("chat_id") == 777 and "joined with your invite" in x.get("text", "") for x in a))
+    a = handle_update({"update_id": 503, "message": {"chat": dm888, "from": newbie, "text": f"/start ref_{code}"}}, state, dry_run=True)
+    check4("second join through the same link gives nothing", state.get("referrals", {}).get("777", {}).get("count") == 1 and state.get("xp", {}).get("888", {}).get("xp") == 22)
+    a = handle_update({"update_id": 504, "message": {"chat": dm, "from": player, "text": f"/start ref_{code}"}}, state, dry_run=True)
+    check4("self-referral gives nothing", state.get("referrals", {}).get("777", {}).get("count") == 1)
+    a = handle_update({"update_id": 505, "message": {"chat": dm, "from": player, "text": "/topreferrers"}}, state, dry_run=True)
+    check4("top referrers lists the inviter", any("Player" in t and "1 friend" in t for t in texts(a)))
+
+    # /premium sends a Stars invoice; pre-checkout is approved.
+    a = handle_update({"update_id": 506, "message": {"chat": dm, "from": player, "text": "/premium"}}, state, dry_run=True)
+    check4("premium sends a Stars invoice", any(x.get("type") == "invoice" and x.get("currency") == "XTR" and x.get("prices", [{}])[0].get("amount") == 150 and x.get("payload") == "premium_777" for x in a))
+    a = handle_update({"update_id": 507, "pre_checkout_query": {"id": "pcq1", "from": player, "currency": "XTR", "total_amount": 150, "invoice_payload": "premium_777"}}, state, dry_run=True)
+    check4("pre-checkout approved", any(x.get("type") == "precheckout" and x.get("query_id") == "pcq1" and x.get("ok") is True for x in a))
+
+    # Successful payment unlocks Premium with a flat +50 XP bonus.
+    a = handle_update({"update_id": 508, "message": {"chat": dm, "from": player, "successful_payment": {"invoice_payload": "premium_777", "total_amount": 150, "currency": "XTR"}}}, state, dry_run=True)
+    check4("payment unlocks Premium", "777" in state.get("premium", {}))
+    check4("purchase bonus is a flat +50 XP", state.get("xp", {}).get("777", {}).get("xp") == 157)
+    check4("welcome to Premium sent", any("Welcome to Premium" in t for t in texts(a)))
+
+    # Premium doubles XP: a correct quiz answer gives +20 instead of +10.
+    state.setdefault("quiz_polls", {})["qp2"] = {"chat_id": 777, "correct": 0, "options": ["A", "B"], "explain": "t"}
+    a = handle_update({"update_id": 509, "poll_answer": {"poll_id": "qp2", "user": player, "option_ids": [0]}}, state, dry_run=True)
+    check4("premium quiz win gives +20 XP", state.get("xp", {}).get("777", {}).get("xp") == 177 and any("+20 XP" in t for t in texts(a)))
+    a = handle_update({"update_id": 510, "message": {"chat": dm, "from": player, "text": "/rank"}}, state, dry_run=True)
+    check4("rank shows the Premium badge", any("Premium" in t for t in texts(a)))
+    a = handle_update({"update_id": 511, "message": {"chat": dm, "from": player, "text": "/leaderboard"}}, state, dry_run=True)
+    check4("leaderboard shows the Premium star", any("Player ⭐" in t for t in texts(a)))
+    print(f"phase 4 checks: {len(fails)} failures")
     if fails:
         print("FAILED: " + "; ".join(fails))
         return 1
