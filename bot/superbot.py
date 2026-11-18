@@ -476,7 +476,10 @@ def _kv_set_state(state):
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
     )
     with urllib.request.build_opener(NoRedirect()).open(request, timeout=15) as response:
-        results = read_json_response(response).get("result") or []
+        # Upstash /pipeline returns a bare JSON array, not {"result": [...]}.
+        body = read_json_response(response)
+        results = body.get("result") if isinstance(body, dict) else body
+        results = results or []
     if not results or results[0].get("result") != "OK":
         raise RuntimeError(f"KV state write failed: {results}")
 
