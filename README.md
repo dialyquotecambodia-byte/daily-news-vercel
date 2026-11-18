@@ -312,6 +312,25 @@ vendored fonts. To try the KV backend locally, set `STATE_BACKEND=kv` plus
 - Command menu is now 82 commands. Dry-run suite: 54 + 35 + 20 + 15 + 6
   Khmer + 17 Phase 4 checks, all passing.
 
+## Phase 5 — Channel & content: broadcast, scheduled posts, briefings (2026-11-18)
+
+- **Broadcast:** `/broadcast <text>` (owner only) sends a message to every
+  `/daily` subscriber. Says so clearly when there are no subscribers yet.
+- **Scheduled posts:** `/schedulepost HH:MM <text>` or
+  `/schedulepost tomorrow HH:MM <text>` (owner only, Asia/Phnom_Penh)
+  queues a channel post; `/scheduled` lists the queue;
+  `/cancelschedule <id>` removes one. Due posts are sent by the Vercel
+  morning (08:42) and evening (18:42) crons via `send_scheduled()` /
+  `check_scheduled_posts()`; a post is only dropped from the queue after
+  it is sent, and stays queued if the channel is not set.
+- **Morning briefing + evening roundup:** two VM research crons
+  (`telegram-superbot-morning-briefing` ~09:42,
+  `telegram-superbot-evening-roundup` ~19:42) research the top 3 verified
+  AI/tech stories and post one briefing each to the channel via
+  `/api/post-news`, same pattern as the 12:42 AI-news cron.
+- Command menu is now 86 commands. Dry-run suite: 54 + 35 + 20 + 15 + 6
+  Khmer + 17 Phase 4 + 12 Phase 5 checks, all passing.
+
 ## Free-tier limits that matter
 
 - **Vercel Hobby functions:** default max 10s per invocation; `vercel.json`
