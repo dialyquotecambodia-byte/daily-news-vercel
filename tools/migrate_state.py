@@ -50,7 +50,9 @@ def main():
           f"users={len(state.get('users', {}))})")
     payload = json.dumps([["SET", KV_KEY, json.dumps(state)]]).encode("utf-8")
     result = kv_request("/pipeline", method="POST", body=payload)
-    results = result.get("result") or []
+    # Upstash /pipeline returns a bare JSON array, not {"result": [...]}.
+    results = result.get("result") if isinstance(result, dict) else result
+    results = results or []
     if not results or results[0].get("result") != "OK":
         raise SystemExit(f"KV SET failed: {result}")
     back = kv_request(f"/get/{KV_KEY}").get("result")
