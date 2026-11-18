@@ -208,6 +208,21 @@ status, _ = post_raw(b"{not json",
                      headers={"X-Telegram-Bot-Api-Secret-Token": "test-secret"})
 check("invalid JSON is rejected", status == 400, f"got {status}")
 
+# 10. Vercel rewrite path: /api/index?route=<name> must dispatch the same way
+resp = client.get("/api/index?route=webhook")
+check("rewrite GET /api/index?route=webhook returns health",
+      resp.status_code == 200 and (resp.get_json(silent=True) or {}).get("ok") is True)
+CALLS.clear()
+resp = client.post("/api/index?route=webhook", json=msg(text="/quote", update_id=116),
+                   headers={"X-Telegram-Bot-Api-Secret-Token": "test-secret"})
+check("rewrite POST /api/index?route=webhook returns a quote",
+      resp.status_code == 200 and any((p.get("text") or "") in sb.DAILY_QUOTES for p in sends()),
+      f"{resp.status_code} {resp.get_json(silent=True)}")
+resp = client.get("/api/index")
+check("GET /api/index without a route is 404", resp.status_code == 404)
+resp = client.get("/api/bogus")
+check("GET /api/bogus is 404", resp.status_code == 404)
+
 print(f"\n{len(PASSED)} passed, {len(FAILED)} failed")
 if FAILED:
     print("failed:", FAILED)

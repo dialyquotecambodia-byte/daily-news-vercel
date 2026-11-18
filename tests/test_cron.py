@@ -136,6 +136,24 @@ check("news caption reached sendMessage",
       any(m == "sendMessage" and "Test AI news" in (p.get("text") or "")
           and "Test Source" in (p.get("text") or "") for m, p in CALLS))
 
+# 4. Vercel rewrite path: /api/index?route=<name> must dispatch the same way.
+status, body = request("/api/index?route=cron-morning")
+check("rewrite GET /api/index?route=cron-morning returns 200",
+      status == 200 and body.get("ok") is True, f"{status} {body}")
+status, body = request("/api/index?route=cron-evening")
+check("rewrite GET /api/index?route=cron-evening returns 200",
+      status == 200 and body.get("ok") is True, f"{status} {body}")
+CALLS.clear()
+status, body = request("/api/index?route=post-news", method="POST", data=json.dumps({
+    "title": "Rewrite news", "summary": "Via the rewrite path.",
+    "source": "Harness"}).encode())
+check("rewrite POST /api/index?route=post-news posts to the channel",
+      status == 200 and body.get("posted") == 1, f"{status} {body}")
+status, body = request("/api/index?route=bogus")
+check("rewrite with an unknown route is 404", status == 404, f"got {status}")
+status, body = request("/api/index")
+check("rewrite target without a route is 404", status == 404, f"got {status}")
+
 print(f"\n{len(PASSED)} passed, {len(FAILED)} failed")
 if FAILED:
     print("failed:", FAILED)

@@ -8,6 +8,14 @@ four routes live in this Flask app, and vercel.json rewrites /api/* to
 /api/index. The URL paths, auth rules and response shapes are unchanged
 from the old per-file handlers.
 
+Routing quirk (verified live 2026-11-18): a Vercel rewrite hands Flask
+the DESTINATION path (/api/index), not the original one, so the app
+cannot tell /api/webhook from /api/cron-morning by request.path alone.
+The rewrite therefore appends the original route name as a query string
+(`/api/index?route=webhook`), and the catch-all below dispatches on it.
+Direct /api/* paths (local tests, Flask test client) still work through
+the explicit routes.
+
 Routes:
 - GET  /api/webhook      health check
 - POST /api/webhook      one Telegram update (optional
@@ -39,19 +47,17 @@ def _err(code, message):
     return jsonify({"ok": False, "error": message}), code
 
 
-@app.route("/api/webhook", methods=["GET"])
-def webhook_health():
-    return jsonify({"ok": True, "service": "daily-news-bot", "mode": "webhook"})
+def webhook_get():
+    return {"ok": True, "service": "daily-news-bot", "mode": "webhook"}, 200
 
 
-@app.route("/api/webhook", methods=["POST"])
-def webhook():
+def webhook_post():
     if WEBHOOK_SECRET:
         if request.headers.get("X-Telegram-Bot-Api-Secret-Token") != WEBHOOK_SECRET:
-            return _err(401, "bad webhook secret")
+            return {"ok": False, "error": "bad webhook secret"}, 401
     update = request.get_json(silent=True)
     if not isinstance(update, dict):
-        return _err(400, "invalid JSON")
+        return {"ok": False, "error": "invalid JSON"}, 400
     try:
         state = sb.load_state()
         # Reminders have no timer on Vercel (no polling loop), so due
@@ -62,58 +68,90 @@ def webhook():
         sb.save_state(state)
     except Exception as e:
         print(f"webhook error: {e}", flush=True)
-        return _err(500, str(e))
-    return jsonify({"ok": True, "actions": len(actions)})
+        return {"ok": False, "error": str(e)}, 500
+    return {"ok": True, "actions": len(actions)}, 200
 
 
-@app.route("/api/cron-morning", methods=["GET", "POST"])
 def cron_morning():
     if not cron_authorized(request.headers):
-        return _err(401, "unauthorized")
+        return {"ok": False, "error": "unauthorized"}, 401
     try:
         daily = sb.send_daily()
         story = sb.send_story()
     except Exception as e:
         print(f"cron-morning error: {e}", flush=True)
-        return _err(500, str(e))
-    return jsonify({"ok": True, "daily_sent": daily, "story_sent": story})
+        return {"ok": False, "error": str(e)}, 500
+    return {"ok": True, "daily_sent": daily, "story_sent": story}, 200
 
 
-@app.route("/api/cron-evening", methods=["GET", "POST"])
 def cron_evening():
     if not cron_authorized(request.headers):
-        return _err(401, "unauthorized")
+        return {"ok": False, "error": "unauthorized"}, 401
     try:
         sent = sb.send_evening()
     except Exception as e:
         print(f"cron-evening error: {e}", flush=True)
-        return _err(500, str(e))
-    return jsonify({"ok": True, "evening_sent": sent})
+        return {"ok": False, "error": str(e)}, 500
+    return {"ok": True, "evening_sent": sent}, 200
 
 
-@app.route("/api/post-news", methods=["GET"])
-def post_news_health():
-    return jsonify({"ok": True, "service": "daily-news-bot", "endpoint": "post-news"})
+def post_news_get():
+    return {"ok": True, "service": "daily-news-bot", "endpoint": "post-news"}, 200
 
 
-@app.route("/api/post-news", methods=["POST"])
-def post_news():
+def post_news_post():
     if not cron_authorized(request.headers):
-        return _err(401, "unauthorized")
+        return {"ok": False, "error": "unauthorized"}, 401
     data = request.get_json(silent=True)
     if not isinstance(data, dict):
-        return _err(400, "invalid JSON")
+        return {"ok": False, "error": "invalid JSON"}, 400
     title = (data.get("title") or "").strip()
     summary = (data.get("summary") or "").strip()
     source = (data.get("source") or "").strip()
     if not title or not summary:
-        return _err(400, "title and summary are required")
+        return {"ok": False, "error": "title and summary are required"}, 400
     try:
         posted = sb.send_news(title, summary, source)
     except Exception as e:
         print(f"post-news error: {e}", flush=True)
-        return _err(500, str(e))
-    return jsonify({"ok": True, "posted": posted})
+        return {"ok": False, "error": str(e)}, 500
+    return {"ok": True, "posted": posted}, 200
+
+
+ROUTES = {
+    "webhook": {"GET": webhook_get, "POST": webhook_post},
+    "cron-morning": {"GET": cron_morning, "POST": cron_morning},
+    "cron-evening": {"GET": cron_evening, "POST": cron_evening},
+    "post-news": {"GET": post_news_get, "POST": post_news_post},
+}
+
+
+def _dispatch(name):
+    methods = ROUTES.get(name)
+    if not methods or request.method not in methods:
+        return _err(404, "unknown endpoint")
+    payload, code = methods[request.method]()
+    return jsonify(payload), code
+
+
+@app.route("/api/webhook", methods=["GET", "POST"])
+def webhook_route():
+    return _dispatch("webhook")
+
+
+@app.route("/api/cron-morning", methods=["GET", "POST"])
+def cron_morning_route():
+    return _dispatch("cron-morning")
+
+
+@app.route("/api/cron-evening", methods=["GET", "POST"])
+def cron_evening_route():
+    return _dispatch("cron-evening")
+
+
+@app.route("/api/post-news", methods=["GET", "POST"])
+def post_news_route():
+    return _dispatch("post-news")
 
 
 @app.route("/", methods=["GET"])
@@ -123,4 +161,9 @@ def root():
 
 @app.route("/api/<path:_any>", methods=["GET", "POST"])
 def unknown(_any):
+    # Vercel rewrites /api/* to /api/index?route=<name>; Flask sees the
+    # destination path, so dispatch on the route query parameter.
+    route = request.args.get("route") or ""
+    if route in ROUTES:
+        return _dispatch(route)
     return _err(404, "unknown endpoint")

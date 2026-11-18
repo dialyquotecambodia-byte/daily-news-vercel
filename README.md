@@ -43,7 +43,11 @@ VM research cron ──POST──> /api/post-news ──> send_news() (12:42 new
   — but `vercel build` (CLI 65+) rejected it with "No Flask entrypoint
   found in default locations" and demanded a single entrypoint. Do not
   split `api/index.py` back into per-route files; the build will fail
-  again.
+  again. Routing quirk, verified live the same day: a Vercel rewrite
+  hands Flask the *destination* path (`/api/index`), not the original
+  one, so the rewrite appends the route name as a query string
+  (`/api/index?route=webhook`) and the catch-all in `api/index.py`
+  dispatches on it. Direct `/api/*` paths still work (local tests).
 
 ## Project layout
 
@@ -195,8 +199,8 @@ existing VM cron and posted through `/api/post-news` (step 6.3).
 
 ```bash
 python3 bot/superbot.py --test          # the bot's own dry-run suite (must end TEST OK)
-python3 tests/test_webhook.py           # 21 checks: fake Telegram POSTs against the Flask app (api/index.py)
-python3 tests/test_cron.py              # 15 checks: real morning/evening/news flows, mocked transport
+python3 tests/test_webhook.py           # 25 checks: fake Telegram POSTs against the Flask app (api/index.py), incl. the /api/index?route= rewrite path
+python3 tests/test_cron.py              # 20 checks: real morning/evening/news flows, mocked transport, incl. the rewrite path
 python3 -m py_compile bot/*.py api/*.py tools/*.py tests/*.py
 ```
 
