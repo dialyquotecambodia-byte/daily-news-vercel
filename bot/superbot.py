@@ -309,7 +309,26 @@ HELP_TEXT = (
     "/about — about Daily News\n"
     "/rules — group rules\n"
     "/info — info about this chat\n\n"
-    "Group admin (admins only, bot must be admin too): /admins, /ban, /unban, /kick, /mute, /unmute, /warn, /warns, /pin, /unpin, /del, /lock, /unlock, /setwelcome, /setrules, /antilink, /antispam"
+    "Group power (admins only, bot must be admin too)\n"
+    "/admins, /ban, /unban, /kick, /mute, /unmute, /warn, /warns, /pin, /unpin, /del, /lock, /unlock, /setwelcome, /setrules, /antilink, /antispam\n"
+    "/promote, /demote, /purge — manage admins and clean up fast\n"
+    "/settings — settings panel with buttons\n"
+    "/connect @Group — manage a group from this private chat\n\n"
+    "Federation — share bans across your groups\n"
+    "/newfed Name — create a federation\n"
+    "/joinfed FED-ID — add this group to a federation\n"
+    "/fban — ban a spammer in every fed group at once\n"
+    "/unfban, /fedinfo, /fedlist, /fedbans\n\n"
+    "Notes & filters\n"
+    "/save name text — save a note, read it with /get name or #name\n"
+    "/notes, /clear name — list and delete notes\n"
+    "/filter word reply — auto-reply when someone says the word\n"
+    "/filters, /stop word — list and remove filters\n\n"
+    "Safety\n"
+    "/captcha on — new members tap a button to prove they are human\n"
+    "/report — reply to a message to report it to the admins\n"
+    "/addblacklist word, /blacklist, /blacklistmode delete|warn|mute\n"
+    "/addsticker — reply to a sticker to blacklist it"
     "\n\nInline: type @MuseVishnu_bot in any chat to send a quote, the Mini App or the channel."
 )
 
@@ -504,6 +523,9 @@ def load_state():
     state.setdefault("scores", {})
     state.setdefault("quiz_polls", {})
     state.setdefault("group_settings", {})
+    state.setdefault("federations", {})
+    state.setdefault("connections", {})
+    state.setdefault("pending_verify", {})
     state.setdefault("users", {})
     state.setdefault("questions", [])
     state.setdefault("invite_codes", [])
@@ -595,13 +617,22 @@ def track_user(state, message, command=""):
 def get_group_settings(state, chat_id):
     settings = state.setdefault("group_settings", {}).setdefault(
         str(chat_id),
-        {"welcome": "", "rules": "", "antilink": False, "antispam": True, "warnings": {}},
+        {"welcome": "", "rules": "", "antilink": False, "antispam": True, "warnings": {},
+         "captcha": False, "reports": True, "blacklist_words": [], "blacklist_mode": "delete",
+         "blacklist_stickers": [], "notes": {}, "filters": {}},
     )
     settings.setdefault("welcome", "")
     settings.setdefault("rules", "")
     settings.setdefault("antilink", False)
     settings.setdefault("antispam", True)
     settings.setdefault("warnings", {})
+    settings.setdefault("captcha", False)
+    settings.setdefault("reports", True)
+    settings.setdefault("blacklist_words", [])
+    settings.setdefault("blacklist_mode", "delete")
+    settings.setdefault("blacklist_stickers", [])
+    settings.setdefault("notes", {})
+    settings.setdefault("filters", {})
     return settings
 
 
@@ -1139,6 +1170,30 @@ BOT_COMMANDS = [
     ("remind", "Set a reminder"),
     ("joke", "A joke"),
     ("motivate", "Motivation"),
+    ("newfed", "Create a federation"),
+    ("joinfed", "Join a federation"),
+    ("fedinfo", "Federation info"),
+    ("fedlist", "List federations"),
+    ("fedbans", "Federally banned users"),
+    ("fban", "Ban in all fed groups"),
+    ("unfban", "Unban in all fed groups"),
+    ("save", "Save a note"),
+    ("get", "Read a note"),
+    ("notes", "List notes"),
+    ("filter", "Add a keyword reply"),
+    ("filters", "List filters"),
+    ("stop", "Remove a filter"),
+    ("captcha", "New member captcha on/off"),
+    ("report", "Report a message to admins"),
+    ("addblacklist", "Blacklist a word"),
+    ("blacklist", "List blacklisted words"),
+    ("blacklistmode", "Blacklist mode"),
+    ("settings", "Group settings panel"),
+    ("connect", "Manage a group from DM"),
+    ("disconnect", "Stop managing from DM"),
+    ("promote", "Promote a member"),
+    ("demote", "Demote an admin"),
+    ("purge", "Delete messages in bulk"),
 ]
 
 
@@ -1330,6 +1385,94 @@ def build_inline_results(query, state=None):
     return results[:5]
 
 
+def fed_new_id(state):
+    """A short random federation id, unique in state."""
+    while True:
+        fid = "fed_" + "".join(random.choice("0123456789abcdef") for _ in range(6))
+        if fid not in state.get("federations", {}):
+            return fid
+
+
+def group_fed(state, chat_id):
+    """Return (fed_id, fed) for the federation this group belongs to, or (None, None)."""
+    for fid, fed in state.get("federations", {}).items():
+        if chat_id in fed.get("groups", []):
+            return fid, fed
+    return None, None
+
+
+def fed_ban_lookup(state, chat_id, user_id):
+    """Return (fed_id, fed, ban) if user_id is federally banned in chat_id's fed."""
+    fid, fed = group_fed(state, chat_id)
+    if not fed:
+        return None, None, None
+    ban = fed.get("banned", {}).get(str(user_id))
+    return fid, fed, ban
+
+
+def admin_list(chat_id, dry_run=False):
+    """User ids of group admins (for /report). Fake list in dry-run mode."""
+    if dry_run:
+        return [111]
+    try:
+        result = api_call("getChatAdministrators", {"chat_id": chat_id})
+    except Exception:
+        return []
+    return [(a.get("user") or {}).get("id") for a in result.get("result", []) if (a.get("user") or {}).get("id")]
+
+
+def resolve_group(args, dry_run=False):
+    """Resolve a /connect target: a chat id, or @username (live getChat)."""
+    parts = args.split()
+    if not parts:
+        return None, None
+    arg = parts[0]
+    if arg.lstrip("-").isdigit():
+        return int(arg), arg
+    if arg.startswith("@"):
+        if dry_run:
+            return -100123, arg
+        try:
+            result = api_call("getChat", {"chat_id": arg})
+            ch = result.get("result", {})
+            return ch.get("id"), ch.get("title") or arg
+        except Exception:
+            return None, None
+    return None, None
+
+
+def settings_keyboard(gid, settings):
+    def tick(on):
+        return "✅" if on else "❌"
+    return {"inline_keyboard": [
+        [{"text": f"🔗 Anti-link: {tick(settings.get('antilink'))}", "callback_data": f"set:{gid}:antilink"}],
+        [{"text": f"🛡 Anti-spam: {tick(settings.get('antispam'))}", "callback_data": f"set:{gid}:antispam"}],
+        [{"text": f"🤖 Captcha: {tick(settings.get('captcha'))}", "callback_data": f"set:{gid}:captcha"}],
+        [{"text": f"🚨 Reports: {tick(settings.get('reports'))}", "callback_data": f"set:{gid}:reports"}],
+        [{"text": f"🚫 Blacklist: {settings.get('blacklist_mode', 'delete')}", "callback_data": f"set:{gid}:blacklist_mode"}],
+        [{"text": "❌ Close", "callback_data": f"set:{gid}:close"}],
+    ]}
+
+
+def settings_text(gid, settings):
+    lines = [
+        f"⚙️ Group settings (chat {gid})",
+        "",
+        f"🔗 Anti-link: {'on' if settings.get('antilink') else 'off'}",
+        f"🛡 Anti-spam: {'on' if settings.get('antispam') else 'off'}",
+        f"🤖 Captcha: {'on' if settings.get('captcha') else 'off'} — new members tap a button to prove they are human",
+        f"🚨 Reports: {'on' if settings.get('reports') else 'off'} — members can /report a message to admins",
+        f"🚫 Blacklist mode: {settings.get('blacklist_mode', 'delete')} — what happens on a blacklisted word",
+        f"📝 Notes: {len(settings.get('notes', {}))} saved",
+        f"🔤 Filters: {len(settings.get('filters', {}))} saved",
+        f"🚫 Blacklisted words: {len(settings.get('blacklist_words', []))}",
+        f"🧩 Blacklisted stickers: {len(settings.get('blacklist_stickers', []))}",
+        "",
+        "Tap a button to change a setting.",
+    ]
+    return "\n".join(lines)
+
+
 def handle_update(update, state, dry_run=False):
     """Return a list of action dicts for one update."""
     actions = []
@@ -1395,6 +1538,46 @@ def handle_update(update, state, dry_run=False):
             else:
                 verdict = "It's a draw! 🤝"
             actions.append({"type": "text", "chat_id": chat_id, "text": f"{RPS_EMOJI[player]} vs {RPS_EMOJI[bot]}\n{verdict}\n\nPlay again with /rps."})
+        elif data.startswith("verify:"):
+            # Captcha button: only the new member themself can tap it.
+            parts = data.split(":")
+            gid = int(parts[1]) if len(parts) > 1 and parts[1].lstrip("-").isdigit() else None
+            uid = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else None
+            tapper = (cb.get("from") or {}).get("id")
+            msg_id = (cb.get("message") or {}).get("message_id")
+            if gid is None or uid is None or tapper != uid:
+                actions.append({"type": "text", "chat_id": chat_id, "text": "Only the new member can tap that button."})
+            else:
+                state.get("pending_verify", {}).pop(f"{gid}:{uid}", None)
+                actions.append({"type": "restrict", "chat_id": gid, "user_id": uid, "until": None, "permissions": {"can_send_messages": True, "can_send_media_messages": True, "can_send_polls": True, "can_send_other_messages": True, "can_add_web_page_previews": True}})
+                name = (cb.get("from") or {}).get("first_name", "friend")
+                if msg_id:
+                    actions.append({"type": "edit", "chat_id": chat_id, "message_id": msg_id, "text": f"✅ {name} is verified — welcome!"})
+                custom = get_group_settings(state, gid).get("welcome", "")
+                welcome = custom.replace("{name}", name) if custom else f"Welcome, {name}! So glad you're here. Try /quote for a little kindness, or /help to see what I can do."
+                actions.append({"type": "text", "chat_id": gid, "text": welcome})
+        elif data.startswith("set:"):
+            # Settings panel button: set:<group id>:<key>
+            parts = data.split(":")
+            gid = int(parts[1]) if len(parts) > 1 and parts[1].lstrip("-").isdigit() else None
+            key = parts[2] if len(parts) > 2 else ""
+            tapper = (cb.get("from") or {}).get("id")
+            msg_id = (cb.get("message") or {}).get("message_id")
+            if gid is None or not key or not is_admin(gid, tapper, dry_run=dry_run):
+                actions.append({"type": "text", "chat_id": chat_id, "text": "Only group admins can change settings."})
+            elif key == "close":
+                if msg_id:
+                    actions.append({"type": "edit", "chat_id": chat_id, "message_id": msg_id, "text": "Settings closed. Send /settings to open them again."})
+            else:
+                settings = get_group_settings(state, gid)
+                if key in ("antilink", "antispam", "captcha", "reports"):
+                    settings[key] = not settings.get(key, False)
+                elif key == "blacklist_mode":
+                    modes = ["delete", "warn", "mute"]
+                    cur = settings.get("blacklist_mode", "delete")
+                    settings["blacklist_mode"] = modes[(modes.index(cur) + 1) % len(modes)] if cur in modes else "delete"
+                if msg_id:
+                    actions.append({"type": "edit", "chat_id": chat_id, "message_id": msg_id, "text": settings_text(gid, settings), "keyboard": settings_keyboard(gid, settings)})
         return actions
 
     message = update.get("message") or update.get("channel_post") or {}
@@ -1406,10 +1589,36 @@ def handle_update(update, state, dry_run=False):
     new_members = message.get("new_chat_members", [])
     for member in new_members:
         name = member.get("first_name", "friend")
-        custom = get_group_settings(state, chat_id).get("welcome", "")
+        member_id = member.get("id")
+        settings = get_group_settings(state, chat_id)
+        # Federation ban: banned in one fed group = banned in all of them
+        _fid, _fed, _ban = fed_ban_lookup(state, chat_id, member_id)
+        if _ban:
+            actions.append({"type": "ban", "chat_id": chat_id, "user_id": member_id})
+            actions.append({"type": "text", "chat_id": chat_id, "text": f"🚫 {name} was banned on joining — federally banned ({_ban.get('reason') or 'no reason given'})."})
+            continue
+        # Captcha: mute until the new member taps the button
+        if settings.get("captcha") and member_id:
+            state.setdefault("pending_verify", {})[f"{chat_id}:{member_id}"] = {"name": name, "at": int(time.time())}
+            actions.append({"type": "restrict", "chat_id": chat_id, "user_id": member_id, "until": None, "permissions": {"can_send_messages": False, "can_send_media_messages": False, "can_send_polls": False, "can_send_other_messages": False, "can_add_web_page_previews": False}})
+            keyboard = {"inline_keyboard": [[{"text": "✅ I'm human — let me in", "callback_data": f"verify:{chat_id}:{member_id}"}]]}
+            actions.append({"type": "text", "chat_id": chat_id, "text": f"👋 Hi {name}! Tap the button below to prove you're human and join the chat.", "keyboard": keyboard})
+            continue
+        custom = settings.get("welcome", "")
         welcome = custom.replace("{name}", name) if custom else f"Welcome, {name}! So glad you're here. Try /quote for a little kindness, or /help to see what I can do."
         actions.append({"type": "text", "chat_id": chat_id, "text": welcome})
     if new_members:
+        return actions
+
+    sticker = message.get("sticker") or {}
+    if sticker:
+        # Stickers have no text: only the blacklist can apply, then stop.
+        _ctype = chat.get("type", "")
+        _sid = (message.get("from") or {}).get("id")
+        if _ctype in ("group", "supergroup"):
+            settings = get_group_settings(state, chat_id)
+            if not is_admin(chat_id, _sid, dry_run=dry_run) and sticker.get("file_unique_id") in settings.get("blacklist_stickers", []):
+                actions.append({"type": "delete", "chat_id": chat_id, "message_id": message.get("message_id")})
         return actions
 
     text = (message.get("text") or "").strip()
@@ -1423,6 +1632,11 @@ def handle_update(update, state, dry_run=False):
     chat_type = chat.get("type", "")
     sender = message.get("from") or {}
     sender_id = sender.get("id")
+    # Groups managed from a private chat: /connect stores the group here.
+    connected_group = None
+    if chat_type == "private" and sender_id:
+        connected_group = state.get("connections", {}).get(str(sender_id))
+    admin_chat = connected_group if connected_group else chat_id
     if chat_type in ("group", "supergroup") and not text.startswith("/"):
         settings = get_group_settings(state, chat_id)
         admin = is_admin(chat_id, sender_id, dry_run=dry_run)
@@ -1442,6 +1656,33 @@ def handle_update(update, state, dry_run=False):
                 actions.append({"type": "restrict", "chat_id": chat_id, "user_id": sender_id, "until": until, "permissions": {"can_send_messages": False}})
                 actions.append({"type": "text", "chat_id": chat_id, "text": f"{sender.get('first_name', 'friend')} was muted for 5 minutes for flooding."})
                 return actions
+        # Menu taps and game answers must not be eaten by filters or blacklists.
+        menu_taps = ("💬 Quote", "❤️ Love", "🤝 Friend", "🇰🇭 Khmer", "📰 News", "🎮 Games", "🎯 Quiz", "📅 Schedule", "ℹ️ Help")
+        if text not in menu_taps:
+            # Blacklisted words (non-admins only): delete, warn or mute per mode
+            if not admin:
+                words = settings.get("blacklist_words", [])
+                hit = next((w for w in words if w.lower() in text.lower()), None)
+                if hit:
+                    actions.append({"type": "delete", "chat_id": chat_id, "message_id": message.get("message_id")})
+                    mode = settings.get("blacklist_mode", "delete")
+                    if mode == "warn":
+                        actions.append({"type": "text", "chat_id": chat_id, "text": f"⚠️ {sender.get('first_name', 'friend')}, that word is not allowed here."})
+                    elif mode == "mute":
+                        actions.append({"type": "restrict", "chat_id": chat_id, "user_id": sender_id, "until": int(time.time()) + 3600, "permissions": {"can_send_messages": False}})
+                        actions.append({"type": "text", "chat_id": chat_id, "text": f"{sender.get('first_name', 'friend')} was muted for 1 hour for a blacklisted word."})
+                    return actions
+            # Notes via #name
+            if text.startswith("#"):
+                note = settings.get("notes", {}).get(text[1:].split()[0].lower())
+                if note:
+                    actions.append({"type": "text", "chat_id": chat_id, "text": note.replace("{name}", sender.get("first_name", "friend"))})
+                    return actions
+            # Keyword filters: auto-reply when a saved word appears
+            for word, response in settings.get("filters", {}).items():
+                if word.lower() in text.lower():
+                    actions.append({"type": "text", "chat_id": chat_id, "text": response.replace("{name}", sender.get("first_name", "friend"))})
+                    return actions
 
     first_word = text.split()[0]
     command = first_word.lower()
@@ -1555,16 +1796,16 @@ def handle_update(update, state, dry_run=False):
     elif command == "/echo":
         reply(args or "You didn't give me anything to echo. Try /echo hello")
     elif command == "/rules":
-        custom_rules = get_group_settings(state, chat_id).get("rules", "")
+        custom_rules = get_group_settings(state, admin_chat).get("rules", "")
         reply(custom_rules or RULES_TEXT)
     elif command == "/admins":
-        if chat_type not in ("group", "supergroup"):
+        if chat_type not in ("group", "supergroup") and not connected_group:
             reply("This only works in a group. Add me to a group and make me an admin.")
         elif dry_run:
             reply("Group admins:\nDailyquote (creator)\nMuseVishnu_bot")
         else:
             try:
-                result = api_call("getChatAdministrators", {"chat_id": chat_id})
+                result = api_call("getChatAdministrators", {"chat_id": admin_chat})
                 names = []
                 for a in result.get("result", []):
                     u = a.get("user") or {}
@@ -1573,49 +1814,50 @@ def handle_update(update, state, dry_run=False):
             except Exception as e:
                 reply(f"I could not list the admins. Make me an admin first. Error: {e}")
     elif command in ("/ban", "/unban", "/kick", "/mute", "/unmute", "/warn", "/warns", "/unwarn", "/pin", "/unpin", "/del", "/lock", "/unlock", "/setwelcome", "/setrules", "/antilink", "/antispam"):
-        if chat_type not in ("group", "supergroup"):
-            reply("Admin commands only work in a group. Add me to a group and make me an admin.")
-        elif not is_admin(chat_id, sender_id, dry_run=dry_run):
+        gchat = admin_chat
+        if chat_type not in ("group", "supergroup") and not connected_group:
+            reply("Admin commands only work in a group. Add me to a group and make me an admin, or connect to one with /connect.")
+        elif not is_admin(gchat, sender_id, dry_run=dry_run):
             reply("Only group admins can use that command.")
         elif command == "/setwelcome":
-            get_group_settings(state, chat_id)["welcome"] = args
+            get_group_settings(state, gchat)["welcome"] = args
             reply(f"Welcome message saved. Use {{name}} for the new member's name.\n\n{args}" if args else "Tell me the welcome text, like /setwelcome Welcome {name}!")
         elif command == "/setrules":
-            get_group_settings(state, chat_id)["rules"] = args
+            get_group_settings(state, gchat)["rules"] = args
             reply(f"Rules saved.\n\n{args}" if args else "Tell me the rules, like /setrules Be kind.")
         elif command == "/antilink":
             on = args.lower() in ("on", "yes", "true", "1")
-            get_group_settings(state, chat_id)["antilink"] = on
+            get_group_settings(state, gchat)["antilink"] = on
             reply(f"Anti-link is now {'on' if on else 'off'}.")
         elif command == "/antispam":
             on = args.lower() not in ("off", "no", "false", "0")
-            get_group_settings(state, chat_id)["antispam"] = on
+            get_group_settings(state, gchat)["antispam"] = on
             reply(f"Anti-spam is now {'on' if on else 'off'}.")
         elif command == "/warns":
             target_id, target_name = target_user(message, args)
             if not target_id:
                 reply("Reply to a member's message, or give their user id, like /warns 123456")
             else:
-                count = get_group_settings(state, chat_id)["warnings"].get(str(target_id), 0)
+                count = get_group_settings(state, gchat)["warnings"].get(str(target_id), 0)
                 reply(f"{target_name} has {count} warning(s).")
         elif command == "/unwarn":
             target_id, target_name = target_user(message, args)
             if not target_id:
                 reply("Reply to a member's message, or give their user id.")
             else:
-                get_group_settings(state, chat_id)["warnings"].pop(str(target_id), None)
+                get_group_settings(state, gchat)["warnings"].pop(str(target_id), None)
                 reply(f"Warnings cleared for {target_name}.")
         elif command == "/warn":
             target_id, target_name = target_user(message, args)
             if not target_id:
                 reply("Reply to a member's message to warn them, like /warn, or /warn 123456")
             else:
-                settings = get_group_settings(state, chat_id)
+                settings = get_group_settings(state, gchat)
                 count = settings["warnings"].get(str(target_id), 0) + 1
                 settings["warnings"][str(target_id)] = count
                 if count >= 3:
                     settings["warnings"][str(target_id)] = 0
-                    actions.append({"type": "restrict", "chat_id": chat_id, "user_id": target_id, "until": int(time.time()) + 3600, "permissions": {"can_send_messages": False}})
+                    actions.append({"type": "restrict", "chat_id": gchat, "user_id": target_id, "until": int(time.time()) + 3600, "permissions": {"can_send_messages": False}})
                     reply(f"{target_name} reached 3 warnings and was muted for 1 hour.")
                 else:
                     reply(f"Warning {count}/3 for {target_name}.")
@@ -1624,36 +1866,36 @@ def handle_update(update, state, dry_run=False):
             if not replied_id:
                 reply("Reply to the message you want to pin, then send /pin.")
             else:
-                actions.append({"type": "pin", "chat_id": chat_id, "message_id": replied_id})
+                actions.append({"type": "pin", "chat_id": gchat, "message_id": replied_id})
                 reply("Pinned.")
         elif command == "/unpin":
-            actions.append({"type": "unpin", "chat_id": chat_id})
+            actions.append({"type": "unpin", "chat_id": gchat})
             reply("Unpinned the last pinned message.")
         elif command == "/del":
             replied_id = (message.get("reply_to_message") or {}).get("message_id")
             if not replied_id:
                 reply("Reply to the message you want to delete, then send /del.")
             else:
-                actions.append({"type": "delete", "chat_id": chat_id, "message_id": replied_id})
+                actions.append({"type": "delete", "chat_id": gchat, "message_id": replied_id})
         elif command == "/lock":
-            actions.append({"type": "set_permissions", "chat_id": chat_id, "permissions": {"can_send_messages": False}})
+            actions.append({"type": "set_permissions", "chat_id": gchat, "permissions": {"can_send_messages": False}})
             reply("Group locked. Only admins can send messages now. Use /unlock to open it again.")
         elif command == "/unlock":
-            actions.append({"type": "set_permissions", "chat_id": chat_id, "permissions": {"can_send_messages": True, "can_send_media_messages": True, "can_send_polls": True, "can_send_other_messages": True, "can_add_web_page_previews": True}})
+            actions.append({"type": "set_permissions", "chat_id": gchat, "permissions": {"can_send_messages": True, "can_send_media_messages": True, "can_send_polls": True, "can_send_other_messages": True, "can_add_web_page_previews": True}})
             reply("Group unlocked. Everyone can send messages again.")
         else:
             target_id, target_name = target_user(message, args)
             if not target_id:
                 reply("Reply to a member's message, or give their user id, like /ban 123456")
             elif command == "/ban":
-                actions.append({"type": "ban", "chat_id": chat_id, "user_id": target_id})
+                actions.append({"type": "ban", "chat_id": gchat, "user_id": target_id})
                 reply(f"{target_name} was banned.")
             elif command == "/unban":
-                actions.append({"type": "unban", "chat_id": chat_id, "user_id": target_id})
+                actions.append({"type": "unban", "chat_id": gchat, "user_id": target_id})
                 reply(f"{target_name} was unbanned.")
             elif command == "/kick":
-                actions.append({"type": "ban", "chat_id": chat_id, "user_id": target_id})
-                actions.append({"type": "unban", "chat_id": chat_id, "user_id": target_id})
+                actions.append({"type": "ban", "chat_id": gchat, "user_id": target_id})
+                actions.append({"type": "unban", "chat_id": gchat, "user_id": target_id})
                 reply(f"{target_name} was kicked.")
             elif command == "/mute":
                 seconds = parse_duration(args.split(None, 1)[0]) if args else None
@@ -1662,11 +1904,307 @@ def handle_update(update, state, dry_run=False):
                     seconds = 3600
                 if seconds is None:
                     seconds = 3600
-                actions.append({"type": "restrict", "chat_id": chat_id, "user_id": target_id, "until": int(time.time()) + seconds, "permissions": {"can_send_messages": False}})
+                actions.append({"type": "restrict", "chat_id": gchat, "user_id": target_id, "until": int(time.time()) + seconds, "permissions": {"can_send_messages": False}})
                 reply(f"{target_name} was muted for {seconds // 60} minute(s).")
             elif command == "/unmute":
-                actions.append({"type": "restrict", "chat_id": chat_id, "user_id": target_id, "until": None, "permissions": {"can_send_messages": True, "can_send_media_messages": True, "can_send_polls": True, "can_send_other_messages": True, "can_add_web_page_previews": True}})
+                actions.append({"type": "restrict", "chat_id": gchat, "user_id": target_id, "until": None, "permissions": {"can_send_messages": True, "can_send_media_messages": True, "can_send_polls": True, "can_send_other_messages": True, "can_add_web_page_previews": True}})
                 reply(f"{target_name} was unmuted.")
+    elif command in ("/newfed", "/delfed", "/joinfed", "/leavefed", "/fedinfo", "/fedlist", "/fedbans", "/fban", "/unfban"):
+        if command == "/newfed":
+            if chat_type in ("group", "supergroup") and not is_admin(chat_id, sender_id, dry_run=dry_run):
+                reply("Only group admins can create a federation.")
+            elif not args:
+                reply("Create a federation like this: /newfed Daily News Fed — groups that join it share bans.")
+            else:
+                fid = fed_new_id(state)
+                groups = [chat_id] if chat_type in ("group", "supergroup") else []
+                state.setdefault("federations", {})[fid] = {"name": args, "owner": sender_id, "groups": groups, "banned": {}}
+                reply(f"Federation created: {args}\nID: {fid}\nOther groups can join with /joinfed {fid} — and /fban will ban a spammer in every group of the fed at once.")
+        elif command == "/delfed":
+            fid = args.split()[0] if args.split() else ""
+            fed = state.get("federations", {}).get(fid)
+            if not fed:
+                reply("Give the federation ID, like /delfed fed_abc123. See /fedlist for your federations.")
+            elif fed.get("owner") != sender_id and sender_id != OWNER_ID:
+                reply("Only the federation owner can delete it.")
+            else:
+                del state["federations"][fid]
+                reply(f"Federation {fed.get('name')} ({fid}) deleted.")
+        elif command == "/joinfed":
+            if chat_type not in ("group", "supergroup") and not connected_group:
+                reply("Use /joinfed inside a group (or connect to one first with /connect).")
+            elif not is_admin(admin_chat, sender_id, dry_run=dry_run):
+                reply("Only group admins can join a federation.")
+            else:
+                fid = args.split()[0] if args.split() else ""
+                fed = state.get("federations", {}).get(fid)
+                if not fed:
+                    reply("No federation with that ID. Ask the fed owner for the ID, or create one with /newfed Name.")
+                elif admin_chat in fed.get("groups", []):
+                    reply(f"This group is already in {fed.get('name')}.")
+                else:
+                    fed.setdefault("groups", []).append(admin_chat)
+                    reply(f"This group joined the federation {fed.get('name')} ({fid}). Bans with /fban now apply here too.")
+        elif command == "/leavefed":
+            if chat_type not in ("group", "supergroup") and not connected_group:
+                reply("Use /leavefed inside a group (or connect to one first).")
+            elif not is_admin(admin_chat, sender_id, dry_run=dry_run):
+                reply("Only group admins can leave a federation.")
+            else:
+                fid, fed = group_fed(state, admin_chat)
+                if not fed:
+                    reply("This group is not in any federation.")
+                else:
+                    fed["groups"].remove(admin_chat)
+                    reply(f"This group left the federation {fed.get('name')}.")
+        elif command == "/fedinfo":
+            fid, fed = group_fed(state, admin_chat)
+            if not fed:
+                reply("This group is not in any federation yet. Create one with /newfed Name or join one with /joinfed FED-ID.")
+            else:
+                reply(f"Federation: {fed.get('name')}\nID: {fid}\nGroups: {len(fed.get('groups', []))}\nFederally banned users: {len(fed.get('banned', {}))}")
+        elif command == "/fedlist":
+            feds = state.get("federations", {})
+            if not feds:
+                reply("No federations exist yet. Create one with /newfed Name.")
+            else:
+                lines = ["Federations:\n"]
+                for fid, fed in list(feds.items())[:20]:
+                    lines.append(f"• {fed.get('name')} — {fid} ({len(fed.get('groups', []))} groups, {len(fed.get('banned', {}))} banned)")
+                reply("\n".join(lines))
+        elif command == "/fedbans":
+            fid, fed = group_fed(state, admin_chat)
+            if not fed:
+                reply("This group is not in any federation.")
+            elif not fed.get("banned"):
+                reply(f"No federally banned users in {fed.get('name')}.")
+            else:
+                lines = [f"Federally banned in {fed.get('name')}:\n"]
+                for uid, ban in list(fed["banned"].items())[:20]:
+                    lines.append(f"• {ban.get('name', uid)} — {ban.get('reason') or 'no reason'}")
+                reply("\n".join(lines))
+        elif command in ("/fban", "/unfban"):
+            fid, fed = group_fed(state, admin_chat)
+            if not fed:
+                reply("This group is not in any federation. Create one with /newfed Name or join one with /joinfed FED-ID.")
+            elif fed.get("owner") != sender_id and not is_admin(admin_chat, sender_id, dry_run=dry_run):
+                reply("Only the federation owner or a group admin can do that.")
+            else:
+                target_id, target_name = target_user(message, args)
+                if not target_id:
+                    reply("Reply to the spammer's message, or give their user id, like /fban 123456 spam links")
+                else:
+                    parts = args.split(None, 1)
+                    replied = message.get("reply_to_message") or {}
+                    if replied.get("from"):
+                        reason = args
+                    elif parts and parts[0].lstrip("-").isdigit():
+                        reason = parts[1] if len(parts) > 1 else ""
+                    else:
+                        reason = args
+                    if command == "/fban":
+                        fed.setdefault("banned", {})[str(target_id)] = {"name": target_name, "reason": reason, "by": sender_id, "at": int(time.time())}
+                        for gid in fed.get("groups", []):
+                            actions.append({"type": "ban", "chat_id": gid, "user_id": target_id})
+                        reply(f"🚫 {target_name} was federally banned in {len(fed.get('groups', []))} group(s). Reason: {reason or 'no reason given'}.")
+                    else:
+                        fed.get("banned", {}).pop(str(target_id), None)
+                        for gid in fed.get("groups", []):
+                            actions.append({"type": "unban", "chat_id": gid, "user_id": target_id})
+                        reply(f"✅ {target_name} was removed from the federation ban list and unbanned in {len(fed.get('groups', []))} group(s).")
+    elif command in ("/save", "/get", "/clear", "/notes", "/filter", "/filters", "/stop"):
+        if chat_type not in ("group", "supergroup") and not connected_group:
+            reply("Notes and filters work in a group. Add me to a group, or connect with /connect.")
+        else:
+            settings = get_group_settings(state, admin_chat)
+            if command in ("/save", "/clear", "/filter", "/stop") and not is_admin(admin_chat, sender_id, dry_run=dry_run):
+                reply("Only group admins can do that.")
+            elif command == "/save":
+                parts = args.split(None, 1)
+                if not parts:
+                    reply("Save a note like this: /save rules Be kind to everyone — or reply to a message with /save name.")
+                else:
+                    name = parts[0].lower()
+                    replied = message.get("reply_to_message") or {}
+                    text_value = (replied.get("text") or "") or (parts[1] if len(parts) > 1 else "")
+                    if not text_value:
+                        reply("Give the note text too, like /save welcome Hello {name}!")
+                    else:
+                        settings.setdefault("notes", {})[name] = text_value
+                        reply(f"Note #{name} saved. Anyone can read it with /get {name} or #{name}.")
+            elif command == "/get":
+                name = args.split()[0].lower() if args.split() else ""
+                note = settings.get("notes", {}).get(name) if name else None
+                if not note:
+                    reply(f"No note named #{name}. See /notes for the list." if name else "Get a note like this: /get welcome")
+                else:
+                    reply(note.replace("{name}", sender.get("first_name", "friend")))
+            elif command == "/clear":
+                name = args.split()[0].lower() if args.split() else ""
+                if name and name in settings.get("notes", {}):
+                    del settings["notes"][name]
+                    reply(f"Note #{name} deleted.")
+                else:
+                    reply("Give the note name, like /clear welcome.")
+            elif command == "/notes":
+                notes = settings.get("notes", {})
+                reply("Saved notes:\n" + "\n".join(f"• #{n}" for n in sorted(notes)) if notes else "No notes saved yet. Admins can add one with /save name text.")
+            elif command == "/filter":
+                parts = args.split(None, 1)
+                if len(parts) < 2:
+                    reply("Add a filter like this: /filter hello Hello {name}, welcome! — I will reply whenever someone says that word.")
+                else:
+                    settings.setdefault("filters", {})[parts[0].lower()] = parts[1]
+                    reply(f"Filter saved: whenever someone says “{parts[0]}”, I will reply with that text. Remove it with /stop {parts[0]}.")
+            elif command == "/filters":
+                filters = settings.get("filters", {})
+                reply("Active filters:\n" + "\n".join(f"• {w} → {r[:60]}" for w, r in sorted(filters.items())) if filters else "No filters yet. Admins can add one with /filter word reply text.")
+            elif command == "/stop":
+                word = args.split()[0].lower() if args.split() else ""
+                if word and word in settings.get("filters", {}):
+                    del settings["filters"][word]
+                    reply(f"Filter for “{word}” removed.")
+                else:
+                    reply("Give the filter word, like /stop hello.")
+    elif command == "/captcha":
+        if chat_type not in ("group", "supergroup") and not connected_group:
+            reply("Use /captcha inside a group (or connect with /connect).")
+        elif not is_admin(admin_chat, sender_id, dry_run=dry_run):
+            reply("Only group admins can do that.")
+        else:
+            on = args.lower() in ("on", "yes", "true", "1")
+            get_group_settings(state, admin_chat)["captcha"] = on
+            reply(f"Captcha is now {'on' if on else 'off'}. New members must tap a button to prove they are human." if on else "Captcha is now off. New members join freely.")
+    elif command == "/report":
+        if chat_type not in ("group", "supergroup"):
+            reply("/report only works in a group — reply to the message you want to report.")
+        else:
+            settings = get_group_settings(state, chat_id)
+            if not settings.get("reports", True):
+                reply("Reports are turned off in this group.")
+            else:
+                replied = message.get("reply_to_message") or {}
+                if not replied:
+                    reply("Reply to the message you want to report, then send /report.")
+                else:
+                    admins = [a for a in admin_list(chat_id, dry_run=dry_run) if a and a != sender_id]
+                    reported = (replied.get("from") or {}).get("first_name", "someone")
+                    reported_text = (replied.get("text") or "")[:300]
+                    reporter = sender.get("first_name", "Someone")
+                    title = chat.get("title", "this group")
+                    for admin_id in admins:
+                        actions.append({"type": "text", "chat_id": admin_id, "text": f"🚨 Report in {title}\n\n{reporter} reported {reported}'s message:\n“{reported_text}”"})
+                    reply("Reported to the group admins. They'll take a look.")
+    elif command in ("/addblacklist", "/rmblacklist", "/blacklist", "/blacklistmode", "/addsticker", "/rmsticker", "/stickers"):
+        if chat_type not in ("group", "supergroup") and not connected_group:
+            reply("Blacklists work in a group. Add me to a group, or connect with /connect.")
+        elif not is_admin(admin_chat, sender_id, dry_run=dry_run):
+            reply("Only group admins can do that.")
+        else:
+            settings = get_group_settings(state, admin_chat)
+            if command == "/addblacklist":
+                word = args.split()[0].lower() if args.split() else ""
+                if not word:
+                    reply("Add a word like this: /addblacklist spam")
+                else:
+                    words = settings.setdefault("blacklist_words", [])
+                    if word not in words:
+                        words.append(word)
+                    reply(f"“{word}” is now blacklisted ({settings.get('blacklist_mode', 'delete')} mode).")
+            elif command == "/rmblacklist":
+                word = args.split()[0].lower() if args.split() else ""
+                words = settings.setdefault("blacklist_words", [])
+                if word in words:
+                    words.remove(word)
+                    reply(f"“{word}” is no longer blacklisted.")
+                else:
+                    reply(f"“{word}” was not in the blacklist.")
+            elif command == "/blacklist":
+                words = settings.get("blacklist_words", [])
+                reply(f"Blacklisted words ({settings.get('blacklist_mode', 'delete')} mode):\n" + "\n".join(f"• {w}" for w in words) if words else "No blacklisted words yet. Add one with /addblacklist word.")
+            elif command == "/blacklistmode":
+                mode = args.split()[0].lower() if args.split() else ""
+                if mode in ("delete", "warn", "mute"):
+                    settings["blacklist_mode"] = mode
+                    reply(f"Blacklist mode is now {mode}.")
+                else:
+                    reply("Pick a mode: /blacklistmode delete — just delete the message, /blacklistmode warn — delete and warn, /blacklistmode mute — delete and mute for 1 hour.")
+            elif command in ("/addsticker", "/rmsticker"):
+                replied = message.get("reply_to_message") or {}
+                sticker = replied.get("sticker") or {}
+                fid_unique = sticker.get("file_unique_id")
+                if not fid_unique:
+                    reply("Reply to the sticker you want to blacklist, then send /addsticker.")
+                else:
+                    stickers = settings.setdefault("blacklist_stickers", [])
+                    if command == "/addsticker":
+                        if fid_unique not in stickers:
+                            stickers.append(fid_unique)
+                        reply("That sticker is now blacklisted — I will delete it when someone sends it.")
+                    else:
+                        if fid_unique in stickers:
+                            stickers.remove(fid_unique)
+                        reply("That sticker is no longer blacklisted.")
+            elif command == "/stickers":
+                stickers = settings.get("blacklist_stickers", [])
+                reply(f"{len(stickers)} blacklisted sticker(s)." if stickers else "No blacklisted stickers yet. Reply to a sticker with /addsticker to blacklist it.")
+    elif command == "/settings":
+        if chat_type not in ("group", "supergroup") and not connected_group:
+            reply("Open settings inside a group, or connect to one first with /connect.")
+        elif not is_admin(admin_chat, sender_id, dry_run=dry_run):
+            reply("Only group admins can change settings.")
+        else:
+            settings = get_group_settings(state, admin_chat)
+            actions.append({"type": "text", "chat_id": chat_id, "text": settings_text(admin_chat, settings), "keyboard": settings_keyboard(admin_chat, settings)})
+    elif command == "/connect":
+        if chat_type != "private":
+            reply("/connect works in a private chat with me — tell me the group, like /connect @YourGroup or /connect -1001234567890.")
+        elif not args:
+            current = state.get("connections", {}).get(str(sender_id))
+            reply(f"You are connected to {current}." if current else "You are not connected to any group. Connect with /connect @YourGroup — you must be an admin there.")
+        else:
+            gid, gname = resolve_group(args, dry_run=dry_run)
+            if gid is None:
+                reply("I couldn't find that group. Use the @username or the group id, and make sure I'm in the group.")
+            else:
+                admins = admin_list(gid, dry_run=dry_run)
+                if sender_id not in admins and sender_id != OWNER_ID:
+                    reply("Only a group admin can connect to that group.")
+                else:
+                    state.setdefault("connections", {})[str(sender_id)] = gid
+                    reply(f"Connected to {gname}. Group admin commands like /ban, /warn, /settings and /fban now work from this chat. Use /disconnect to stop.")
+    elif command == "/disconnect":
+        if chat_type != "private":
+            reply("/disconnect works in a private chat with me.")
+        else:
+            removed = state.get("connections", {}).pop(str(sender_id), None)
+            reply("Disconnected." if removed else "You were not connected to any group.")
+    elif command in ("/promote", "/demote", "/purge"):
+        if chat_type not in ("group", "supergroup") and not connected_group:
+            reply("Use that inside a group (or connect with /connect).")
+        elif not is_admin(admin_chat, sender_id, dry_run=dry_run):
+            reply("Only group admins can do that.")
+        elif command == "/purge":
+            replied_id = (message.get("reply_to_message") or {}).get("message_id")
+            if not replied_id:
+                reply("Reply to the message you want to purge from, then send /purge. I'll delete up to 50 messages.")
+            else:
+                start = replied_id
+                end = message.get("message_id", replied_id)
+                count = 0
+                for mid in range(start, end + 1):
+                    if count >= 50:
+                        break
+                    actions.append({"type": "delete", "chat_id": admin_chat, "message_id": mid})
+                    count += 1
+                reply(f"Purged {count} message(s).")
+        else:
+            target_id, target_name = target_user(message, args)
+            if not target_id:
+                reply("Reply to a member's message, or give their user id.")
+            else:
+                actions.append({"type": "promote", "chat_id": admin_chat, "user_id": target_id, "promote": command == "/promote"})
+                reply(f"{target_name} was {'promoted to admin' if command == '/promote' else 'demoted'}.")
     elif command == "/info":
         title = chat.get("title") or chat.get("first_name") or "this chat"
         reply(f"This is {title} (chat id {chat_id}, type {chat.get('type')}). I'm @MuseVishnu_bot.")
@@ -1959,6 +2497,21 @@ def execute_actions(actions, state):
         elif action["type"] == "set_permissions":
             api_call("setChatPermissions", {"chat_id": action["chat_id"], "permissions": action["permissions"]})
             print(f"set chat permissions in {action['chat_id']}", flush=True)
+        elif action["type"] == "promote":
+            if action.get("promote"):
+                perms = {"can_change_info": False, "can_delete_messages": True, "can_invite_users": True, "can_restrict_members": True, "can_pin_messages": True, "can_promote_members": False, "can_manage_chat": False, "can_manage_video_chats": False, "can_post_stories": False, "can_edit_stories": False, "can_delete_stories": False}
+            else:
+                perms = {"can_change_info": False, "can_delete_messages": False, "can_invite_users": False, "can_restrict_members": False, "can_pin_messages": False, "can_promote_members": False, "can_manage_chat": False, "can_manage_video_chats": False, "can_post_stories": False, "can_edit_stories": False, "can_delete_stories": False}
+            api_call("promoteChatMember", {"chat_id": action["chat_id"], "user_id": action["user_id"], **perms})
+            print(f"{'promoted' if action.get('promote') else 'demoted'} {action['user_id']} in {action['chat_id']}", flush=True)
+        elif action["type"] == "edit":
+            try:
+                payload = {"chat_id": action["chat_id"], "message_id": action["message_id"], "text": action["text"]}
+                if action.get("keyboard"):
+                    payload["reply_markup"] = action["keyboard"]
+                api_call("editMessageText", payload)
+            except Exception as e:
+                print(f"editMessageText failed: {e}", flush=True)
         time.sleep(0.3)
 
 
@@ -2152,6 +2705,106 @@ def run_tests():
     for update in fake:
         actions = handle_update(update, state, dry_run=True)
         print(f"update {update['update_id']}: {actions}")
+
+    # Phase 1 (Rose-style group power) tests. Group -100123 has admin 111,
+    # spammer 222, bad user 333, new member 444 from the fake updates above.
+    fails = []
+    def check(label, cond):
+        print(("PASS " if cond else "FAIL ") + label)
+        if not cond:
+            fails.append(label)
+    def texts(actions):
+        return [a.get("text", "") for a in actions if a.get("type") == "text"]
+    group = {"id": -100123, "type": "supergroup", "title": "Test Group"}
+    group2 = {"id": -100456, "type": "supergroup", "title": "Second Group"}
+    admin = {"id": 111, "first_name": "Dailyquote"}
+
+    # Federation: create, join a second group, fban across both, unfban.
+    a = handle_update({"update_id": 101, "message": {"chat": group, "from": admin, "text": "/newfed TestFed"}}, state, dry_run=True)
+    feds = state.get("federations", {})
+    check("newfed creates one federation", len(feds) == 1)
+    fid = list(feds.keys())[0] if feds else ""
+    check("newfed reply shows the fed id", any(fid in t for t in texts(a)))
+    a = handle_update({"update_id": 102, "message": {"chat": group2, "from": admin, "text": f"/joinfed {fid}"}}, state, dry_run=True)
+    check("joinfed adds second group", len(feds[fid]["groups"]) == 2)
+    a = handle_update({"update_id": 103, "message": {"chat": group, "from": admin, "text": "/fban spam", "reply_to_message": {"message_id": 9, "from": {"id": 222, "first_name": "Spammer"}}}}, state, dry_run=True)
+    check("fban bans in both fed groups", len([x for x in a if x.get("type") == "ban"]) == 2)
+    check("fban records the ban", "222" in feds[fid]["banned"])
+    a = handle_update({"update_id": 104, "message": {"chat": group2, "new_chat_members": [{"id": 222, "first_name": "Spammer"}]}}, state, dry_run=True)
+    check("fed-banned user is banned on joining another fed group", any(x.get("type") == "ban" and x.get("user_id") == 222 for x in a))
+    a = handle_update({"update_id": 105, "message": {"chat": group, "from": admin, "text": "/unfban 222"}}, state, dry_run=True)
+    check("unfban unbans in both fed groups", len([x for x in a if x.get("type") == "unban"]) == 2 and "222" not in feds[fid]["banned"])
+    a = handle_update({"update_id": 106, "message": {"chat": group, "from": admin, "text": "/fedinfo"}}, state, dry_run=True)
+    check("fedinfo shows the federation", any("TestFed" in t for t in texts(a)))
+
+    # Notes and filters, including #name and keyword triggers.
+    a = handle_update({"update_id": 107, "message": {"chat": group, "from": admin, "text": "/save welcome Hello {name}!"}}, state, dry_run=True)
+    check("save stores a note", state["group_settings"]["-100123"]["notes"].get("welcome") == "Hello {name}!")
+    a = handle_update({"update_id": 108, "message": {"chat": group, "from": admin, "text": "/get welcome"}}, state, dry_run=True)
+    check("get reads the note with the name filled in", any(t == "Hello Dailyquote!" for t in texts(a)))
+    a = handle_update({"update_id": 109, "message": {"chat": group, "from": {"id": 333, "first_name": "Bad"}, "text": "#welcome"}}, state, dry_run=True)
+    check("#note trigger reads the note", any(t == "Hello Bad!" for t in texts(a)))
+    a = handle_update({"update_id": 110, "message": {"chat": group, "from": admin, "text": "/filter hello Hello {name}, welcome!"}}, state, dry_run=True)
+    check("filter is saved", "hello" in state["group_settings"]["-100123"]["filters"])
+    a = handle_update({"update_id": 111, "message": {"chat": group, "from": {"id": 333, "first_name": "Bad"}, "text": "hello everyone"}}, state, dry_run=True)
+    check("filter auto-replies to the keyword", any(t == "Hello Bad, welcome!" for t in texts(a)))
+
+    # Captcha: join mutes + button, wrong user cannot verify, member can.
+    a = handle_update({"update_id": 112, "message": {"chat": group, "from": admin, "text": "/captcha on"}}, state, dry_run=True)
+    check("captcha turns on", state["group_settings"]["-100123"]["captcha"] is True)
+    a = handle_update({"update_id": 113, "message": {"chat": group, "new_chat_members": [{"id": 444, "first_name": "Newbie"}]}}, state, dry_run=True)
+    check("captcha join restricts the member", any(x.get("type") == "restrict" and x.get("user_id") == 444 for x in a))
+    check("captcha join sends the verify button", any("verify:-100123:444" in str(x.get("keyboard", "")) for x in a))
+    a = handle_update({"update_id": 114, "callback_query": {"id": "cbv-wrong", "data": "verify:-100123:444", "from": {"id": 555, "first_name": "Stranger"}, "message": {"chat": group, "message_id": 77}}}, state, dry_run=True)
+    check("wrong user cannot verify", any("Only the new member" in t for t in texts(a)))
+    a = handle_update({"update_id": 115, "callback_query": {"id": "cbv-ok", "data": "verify:-100123:444", "from": {"id": 444, "first_name": "Newbie"}, "message": {"chat": group, "message_id": 77}}}, state, dry_run=True)
+    check("member verifies and is unresticted", any(x.get("type") == "restrict" and x.get("user_id") == 444 and (x.get("permissions") or {}).get("can_send_messages") for x in a))
+    check("verify edits the captcha message", any(x.get("type") == "edit" and x.get("message_id") == 77 for x in a))
+    check("pending verify cleared", f"-100123:444" not in state.get("pending_verify", {}))
+
+    # Blacklist words (delete, then warn mode) and stickers.
+    a = handle_update({"update_id": 116, "message": {"chat": group, "from": admin, "text": "/addblacklist spamword"}}, state, dry_run=True)
+    check("blacklist word saved", "spamword" in state["group_settings"]["-100123"]["blacklist_words"])
+    a = handle_update({"update_id": 117, "message": {"chat": group, "from": {"id": 333, "first_name": "Bad"}, "text": "this has spamword in it"}}, state, dry_run=True)
+    check("blacklisted word deletes the message", any(x.get("type") == "delete" for x in a))
+    a = handle_update({"update_id": 118, "message": {"chat": group, "from": admin, "text": "/blacklistmode warn"}}, state, dry_run=True)
+    a = handle_update({"update_id": 119, "message": {"chat": group, "from": {"id": 333, "first_name": "Bad"}, "text": "spamword again"}}, state, dry_run=True)
+    check("warn mode deletes and warns", any(x.get("type") == "delete" for x in a) and any("not allowed" in t for t in texts(a)))
+    a = handle_update({"update_id": 120, "message": {"chat": group, "from": admin, "text": "/addsticker", "reply_to_message": {"message_id": 5, "sticker": {"file_unique_id": "STK1"}}}}, state, dry_run=True)
+    check("sticker blacklisted", "STK1" in state["group_settings"]["-100123"]["blacklist_stickers"])
+    a = handle_update({"update_id": 121, "message": {"chat": group, "from": {"id": 333, "first_name": "Bad"}, "message_id": 50, "sticker": {"file_unique_id": "STK1"}}}, state, dry_run=True)
+    check("blacklisted sticker is deleted", any(x.get("type") == "delete" and x.get("message_id") == 50 for x in a))
+
+    # Report forwards to the group admins.
+    a = handle_update({"update_id": 122, "message": {"chat": group, "from": {"id": 333, "first_name": "Bad"}, "text": "/report", "reply_to_message": {"message_id": 6, "from": {"id": 222, "first_name": "Spammer"}, "text": "buy cheap stuff"}}}, state, dry_run=True)
+    check("report reaches an admin DM", any(x.get("type") == "text" and x.get("chat_id") == 111 and "Report in" in x.get("text", "") for x in a))
+    check("report confirms in the group", any("Reported to the group admins" in t for t in texts(a)))
+
+    # Settings panel: open it, toggle anti-link off via the button.
+    a = handle_update({"update_id": 123, "message": {"chat": group, "from": admin, "text": "/settings"}}, state, dry_run=True)
+    check("settings panel has buttons", any(x.get("keyboard") and "Anti-link" in str(x.get("keyboard")) for x in a))
+    a = handle_update({"update_id": 124, "callback_query": {"id": "cbs1", "data": "set:-100123:antilink", "from": admin, "message": {"chat": group, "message_id": 88}}}, state, dry_run=True)
+    check("settings button toggles anti-link off", state["group_settings"]["-100123"]["antilink"] is False and any(x.get("type") == "edit" and "Anti-link: off" in x.get("text", "") for x in a))
+
+    # Connect from DM: /ban works from the private chat, then disconnect.
+    a = handle_update({"update_id": 125, "message": {"chat": {"id": 111, "type": "private"}, "from": admin, "text": "/connect -100123"}}, state, dry_run=True)
+    check("connect stores the group", state.get("connections", {}).get("111") == -100123)
+    a = handle_update({"update_id": 126, "message": {"chat": {"id": 111, "type": "private"}, "from": admin, "text": "/ban 222"}}, state, dry_run=True)
+    check("ban from DM targets the connected group", any(x.get("type") == "ban" and x.get("chat_id") == -100123 and x.get("user_id") == 222 for x in a))
+    a = handle_update({"update_id": 127, "message": {"chat": {"id": 111, "type": "private"}, "from": admin, "text": "/disconnect"}}, state, dry_run=True)
+    check("disconnect clears the connection", "111" not in state.get("connections", {}))
+
+    # Promote, demote, purge.
+    a = handle_update({"update_id": 128, "message": {"chat": group, "from": admin, "text": "/promote", "reply_to_message": {"message_id": 7, "from": {"id": 222, "first_name": "Spammer"}}}}, state, dry_run=True)
+    check("promote action", any(x.get("type") == "promote" and x.get("promote") is True and x.get("user_id") == 222 for x in a))
+    a = handle_update({"update_id": 129, "message": {"chat": group, "from": admin, "text": "/demote", "reply_to_message": {"message_id": 7, "from": {"id": 222, "first_name": "Spammer"}}}}, state, dry_run=True)
+    check("demote action", any(x.get("type") == "promote" and x.get("promote") is False and x.get("user_id") == 222 for x in a))
+    a = handle_update({"update_id": 130, "message": {"chat": group, "from": admin, "text": "/purge", "message_id": 105, "reply_to_message": {"message_id": 100}}}, state, dry_run=True)
+    check("purge deletes 6 messages", len([x for x in a if x.get("type") == "delete"]) == 6)
+    print(f"phase 1 checks: {len(fails)} failures")
+    if fails:
+        print("FAILED: " + "; ".join(fails))
+        return 1
     # Image generation test
     path = make_quote_image("Test quote for the super bot.")
     print(f"quote image created: {path} size={os.path.getsize(path)} bytes")
