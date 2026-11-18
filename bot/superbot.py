@@ -759,6 +759,14 @@ def is_admin(chat_id, user_id, dry_run=False, sender_chat_id=None):
         # In tests, user 111 is the group admin, everyone else is not.
         return user_id == 111
     if not user_id:
+        # Posting as the group's linked channel (sender_chat == linked_chat_id) is also an admin.
+        if sender_chat_id:
+            try:
+                chat = api_call("getChat", {"chat_id": chat_id}).get("result", {})
+            except Exception:
+                chat = {}
+            if chat.get("linked_chat_id") == sender_chat_id:
+                return True
         return False
     try:
         result = api_call("getChatAdministrators", {"chat_id": chat_id})
@@ -4223,6 +4231,18 @@ def run_tests():
     # A message sent on behalf of some OTHER chat is not an admin.
     a = handle_update({"update_id": 829, "message": {"chat": group, "sender_chat": {"id": -100999}, "text": "/lock photo"}}, state, dry_run=True)
     check7("other-chat sender is not an admin", any("Only group admins" in t for t in texts(a)))
+    # Posting as the group's linked channel counts as admin (live getChat branch, faked here).
+    _real_api = api_call
+    def _fake_api(method, payload=None):
+        if method == "getChat":
+            return {"ok": True, "result": {"linked_chat_id": -100999}}
+        return {"ok": False, "description": "fake"}
+    globals()["api_call"] = _fake_api
+    try:
+        check7("linked channel counts as admin", is_admin(-100123, None, dry_run=False, sender_chat_id=-100999) is True)
+        check7("unlinked channel does not", is_admin(-100123, None, dry_run=False, sender_chat_id=-100888) is False)
+    finally:
+        globals()["api_call"] = _real_api
     print(f"phase 7 checks: {len(fails)} failures")
     if fails:
         print("FAILED: " + "; ".join(fails))
