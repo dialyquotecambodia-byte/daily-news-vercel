@@ -347,7 +347,11 @@ HELP_TEXT = (
     "/premium — 150 Stars for lifetime Premium: double XP and a ⭐ badge\n\n"
     "Channel & content (owner)\n"
     "/broadcast — send a message to every subscriber\n"
-    "/schedulepost 18:30 text — queue a channel post, /scheduled to list, /cancelschedule to cancel"
+    "/schedulepost 18:30 text — queue a channel post, /scheduled to list, /cancelschedule to cancel\n\n"
+    "Growth\n"
+    "/giveaway premium — start a giveaway in a group, /draw picks the winner\n"
+    "/share — a ready-to-forward promo for Daily News\n"
+    "/boost on — double referral rewards (auto on weekends)"
     "\n\nInline: type @MuseVishnu_bot in any chat to send a quote, the Mini App or the channel."
 )
 
@@ -554,6 +558,7 @@ def load_state():
     state.setdefault("referred_by", {})
     state.setdefault("premium", {})
     state.setdefault("scheduled_posts", [])
+    state.setdefault("giveaways", {})
     state.setdefault("users", {})
     state.setdefault("questions", [])
     state.setdefault("invite_codes", [])
@@ -1241,6 +1246,11 @@ BOT_COMMANDS = [
     ("schedulepost", "Schedule a channel post (owner)"),
     ("scheduled", "List scheduled posts (owner)"),
     ("cancelschedule", "Cancel a scheduled post (owner)"),
+    ("giveaway", "Start a giveaway in a group"),
+    ("draw", "Draw the giveaway winner"),
+    ("endgiveaway", "Cancel the giveaway"),
+    ("share", "Share Daily News with friends"),
+    ("boost", "Referral boost on/off/auto (owner)"),
 ]
 
 
@@ -1563,6 +1573,26 @@ def xp_record(state, uid):
     return state.get("xp", {}).get(str(uid), {"xp": 0, "name": "friend"})
 
 
+def referral_boost_active(state):
+    """Double referral rewards: forced on/off, otherwise automatic on weekends (Phnom Penh)."""
+    flag = state.get("referral_boost")
+    if flag is True:
+        return True
+    if flag is False:
+        return False
+    return phnom_penh_now().weekday() >= 5
+
+
+def parse_prize(args):
+    """Giveaway prize: 'premium' -> lifetime Premium, a number -> that much XP, anything else -> custom prize (+50 XP for the winner)."""
+    text = args.strip()
+    if text.lower() == "premium":
+        return "⭐ Premium (lifetime)", "premium", 0
+    if re.fullmatch(r"\d+", text):
+        return f"+{text} XP", "xp", int(text)
+    return text, "custom", 50
+
+
 def referral_code(state, uid, name):
     """Each user's permanent invite code, created once and stored."""
     rec = state.setdefault("referrals", {}).setdefault(str(uid), {"code": "", "count": 0, "referred": [], "name": name or "friend"})
@@ -1802,7 +1832,19 @@ def handle_update(update, state, dry_run=False):
         if not chat_id:
             return actions
         actions.append({"type": "callback", "callback_id": cb.get("id"), "text": "Got it!"})
-        if data == "quote":
+        if data.startswith("giveaway_join:"):
+            gid = data.split(":", 1)[1]
+            g = state.get("giveaways", {}).get(gid)
+            uid = (cb.get("from") or {}).get("id")
+            if not g:
+                actions[-1]["text"] = "This giveaway is over."
+            elif uid and str(uid) not in [str(e) for e in g.get("entries", [])]:
+                g.setdefault("entries", []).append(uid)
+                g.setdefault("names", {})[str(uid)] = (cb.get("from") or {}).get("first_name", "friend")
+                actions[-1]["text"] = "You're in! Good luck! 🍀"
+            else:
+                actions[-1]["text"] = "You're already in! 🍀"
+        elif data == "quote":
             actions.append({"type": "text", "chat_id": chat_id, "text": pick_quote("any")})
         elif data == "love":
             actions.append({"type": "text", "chat_id": chat_id, "text": pick_quote("love")})
@@ -2027,11 +2069,14 @@ def handle_update(update, state, dry_run=False):
                 ref_rec = state["referrals"][ref_uid]
                 ref_rec.setdefault("referred", []).append(str(sender_id))
                 ref_rec["count"] = len(ref_rec["referred"])
-                amt_ref = xp_amount(state, ref_uid, 50)
-                amt_new = xp_amount(state, sender_id, 20)
-                award_xp(state, ref_uid, ref_rec.get("name", "friend"), 50)
-                award_xp(state, sender_id, first, 20)
-                extra = f"\n\n🎉 You joined through {ref_rec.get('name', 'a friend')}'s invite! You got +{amt_new} XP and they got +{amt_ref} XP."
+                boost = referral_boost_active(state)
+                base_ref = 100 if boost else 50
+                base_new = 40 if boost else 20
+                amt_ref = xp_amount(state, ref_uid, base_ref)
+                amt_new = xp_amount(state, sender_id, base_new)
+                award_xp(state, ref_uid, ref_rec.get("name", "friend"), base_ref)
+                award_xp(state, sender_id, first, base_new)
+                extra = f"\n\n🎉 You joined through {ref_rec.get('name', 'a friend')}'s invite! You got +{amt_new} XP and they got +{amt_ref} XP." + (" 🔥 Referral boost is ON — double rewards!" if boost else "")
                 actions.append({"type": "text", "chat_id": int(ref_uid), "text": f"🎉 {first} joined with your invite! +{amt_ref} XP. You have invited {ref_rec['count']} friend(s)."})
         reply(f"Hi {first}, welcome to Daily News.\n\n{HELP_TEXT}\n\n🔗 Invite friends, earn XP: https://t.me/MuseVishnu_bot?start=ref_{my_code} (see /referral){extra}", keyboard=start_keyboard())
     elif command == "/help":
@@ -2685,12 +2730,15 @@ def handle_update(update, state, dry_run=False):
     elif command == "/referral":
         code = referral_code(state, sender_id, sender.get("first_name", "friend"))
         rec = state["referrals"][str(sender_id)]
-        amt = xp_amount(state, sender_id, 50)
+        boost = referral_boost_active(state)
+        amt = xp_amount(state, sender_id, 100 if boost else 50)
+        new_amt = 40 if boost else 20
         reply(
             f"🔗 Your invite link\n\nhttps://t.me/MuseVishnu_bot?start=ref_{code}\n\n"
-            f"Friends who join with it get +20 XP, you get +{amt} XP each.\n"
+            f"Friends who join with it get +{new_amt} XP, you get +{amt} XP each.\n"
             f"You have invited {rec.get('count', 0)} friend(s).\n"
             f"Top inviters: /topreferrers"
+            + ("\n\n🔥 Referral boost is ON — double rewards!" if boost else "")
         )
     elif command == "/topreferrers":
         refs = state.get("referrals", {})
@@ -2759,6 +2807,89 @@ def handle_update(update, state, dry_run=False):
             before = len(state.get("scheduled_posts", []))
             state["scheduled_posts"] = [p for p in state.get("scheduled_posts", []) if p.get("id") != pid]
             reply(f"Cancelled {pid}." if len(state["scheduled_posts"]) < before else f"No scheduled post with ID {pid}. See /scheduled.")
+    elif command == "/giveaway":
+        if chat_type not in ("group", "supergroup"):
+            reply("Giveaways run in groups — add me to a group and run /giveaway there.")
+        elif not is_admin(chat_id, sender_id, dry_run=dry_run):
+            reply("Only group admins can start a giveaway.")
+        else:
+            existing = state.get("giveaways", {}).get(str(chat_id))
+            if existing and not args:
+                reply(f"🎉 Giveaway is live! Prize: {existing['prize']}\n{len(existing['entries'])} entrant(s) so far. Tap the Join button on the giveaway post to enter!\nAdmins: /draw to pick a winner, /endgiveaway to cancel.")
+            elif existing:
+                reply("A giveaway is already running here. /draw to pick a winner or /endgiveaway to cancel it first.")
+            elif not args:
+                reply("Use: /giveaway premium — or /giveaway 100 — or /giveaway a shoutout on the channel\nPrize: Premium (lifetime), a number of XP, or any custom prize.")
+            else:
+                prize_text, kind, xp_amt = parse_prize(args)
+                state.setdefault("giveaways", {})[str(chat_id)] = {"prize": prize_text, "prize_kind": kind, "prize_xp": xp_amt, "entries": [], "names": {}, "starter": sender_id, "created": int(time.time())}
+                keyboard = {"inline_keyboard": [[{"text": "🎉 Join the giveaway", "callback_data": f"giveaway_join:{chat_id}"}]]}
+                actions.append({"type": "text", "chat_id": chat_id, "text": f"🎉 GIVEAWAY! 🎉\n\nPrize: {prize_text}\n\nTap below to join — anyone in the group can enter!\nWinner picked with /draw.", "keyboard": keyboard})
+    elif command == "/draw":
+        if chat_type not in ("group", "supergroup"):
+            reply("Giveaways run in groups.")
+        else:
+            g = state.get("giveaways", {}).get(str(chat_id))
+            if not g:
+                reply("No giveaway is running here. Start one with /giveaway.")
+            elif not (is_admin(chat_id, sender_id, dry_run=dry_run) or sender_id == g.get("starter")):
+                reply("Only a group admin or the giveaway starter can draw the winner.")
+            elif not g.get("entries"):
+                reply("Nobody entered yet — the giveaway is still open! Tap the Join button on the giveaway post to enter.")
+            else:
+                winner_id = random.choice(g["entries"])
+                winner_name = g.get("names", {}).get(str(winner_id), "friend")
+                if g["prize_kind"] == "premium":
+                    state.setdefault("premium", {})[str(winner_id)] = {"since": int(time.time()), "stars": 0, "via": "giveaway"}
+                    prize_line = "⭐ Premium (lifetime) unlocked!"
+                elif g["prize_kind"] == "xp":
+                    award_xp(state, winner_id, winner_name, g["prize_xp"])
+                    prize_line = f"+{xp_amount(state, winner_id, g['prize_xp'])} XP!"
+                else:
+                    award_xp(state, winner_id, winner_name, 50)
+                    prize_line = f"{g['prize']} (+50 XP)!"
+                reply(f"🎉 GIVEAWAY WINNER! 🎉\n\n🏆 {winner_name} wins {prize_line}\n\n{len(g['entries'])} entrant(s). Thanks for playing — watch for the next giveaway!")
+                del state["giveaways"][str(chat_id)]
+    elif command == "/endgiveaway":
+        if chat_type not in ("group", "supergroup"):
+            reply("Giveaways run in groups.")
+        else:
+            g = state.get("giveaways", {}).get(str(chat_id))
+            if not g:
+                reply("No giveaway is running here.")
+            elif not (is_admin(chat_id, sender_id, dry_run=dry_run) or sender_id == g.get("starter")):
+                reply("Only a group admin or the giveaway starter can end it.")
+            else:
+                del state["giveaways"][str(chat_id)]
+                reply(f"Giveaway ended — {len(g.get('entries', []))} entrant(s), no winner picked. Start a new one with /giveaway.")
+    elif command == "/share":
+        code = referral_code(state, sender_id, sender.get("first_name", "friend"))
+        reply(
+            "📣 Share Daily News with your friends!\n\n"
+            "📰 Daily News — @dailynewsreporter\n"
+            "Tech news, AI updates, free AI tools and a daily quote.\n\n"
+            "📱 Mini App: https://t.me/MuseVishnu_bot/Dailynews\n"
+            "🤖 Bot: @MuseVishnu_bot\n"
+            f"🔗 Your invite link: https://t.me/MuseVishnu_bot?start=ref_{code}\n\n"
+            "Forward this message to a friend or a group!"
+        )
+    elif command == "/boost":
+        if sender_id != OWNER_ID:
+            reply("Only the owner can change the referral boost.")
+        elif not args:
+            status = "ON" if referral_boost_active(state) else "OFF"
+            reply(f"🔥 Referral boost is {status}.\n\nWeekends boost automatically. /boost on forces it on, /boost off forces it off, /boost auto returns to weekend-only.")
+        elif args.strip().lower() == "on":
+            state["referral_boost"] = True
+            reply("🔥 Referral boost is ON — invites now earn double: +100 XP for you, +40 XP for each friend who joins!")
+        elif args.strip().lower() == "off":
+            state["referral_boost"] = False
+            reply("Referral boost is off. Standard rewards: +50 XP for you, +20 XP per friend.")
+        elif args.strip().lower() == "auto":
+            state["referral_boost"] = None
+            reply("Referral boost is back to auto — double rewards on Saturday and Sunday.")
+        else:
+            reply("Use: /boost on — /boost off — /boost auto")
     elif command == "/info":
         title = chat.get("title") or chat.get("first_name") or "this chat"
         reply(f"This is {title} (chat id {chat_id}, type {chat.get('type')}). I'm @MuseVishnu_bot.")
@@ -3666,6 +3797,66 @@ def run_tests():
     a = handle_update({"update_id": 608, "message": {"chat": dm_owner, "from": owner, "text": "/schedulepost badtime oops"}}, state, dry_run=True)
     check5("bad schedule time is rejected", any("Use: /schedulepost" in t for t in texts(a)))
     print(f"phase 5 checks: {len(fails)} failures")
+    if fails:
+        print("FAILED: " + "; ".join(fails))
+        return 1
+
+    # Phase 6 (growth engine: giveaways, share, referral boost) tests.
+    fails = []
+    def check6(label, cond):
+        print(("PASS " if cond else "FAIL ") + label)
+        if not cond:
+            fails.append(label)
+    group = {"id": -100123, "type": "supergroup"}
+    admin = {"id": 111, "first_name": "Admin"}
+    spammer = {"id": 222, "first_name": "Spammer"}
+    bad = {"id": 333, "first_name": "Bad"}
+
+    # /share sends the promo kit with the referral link.
+    a = handle_update({"update_id": 701, "message": {"chat": dm, "from": player, "text": "/share"}}, state, dry_run=True)
+    check6("share sends the promo kit", any("@dailynewsreporter" in t and "start=ref_DN" in t for t in texts(a)))
+
+    # /boost is owner-only; on doubles referral rewards.
+    a = handle_update({"update_id": 702, "message": {"chat": dm, "from": player, "text": "/boost on"}}, state, dry_run=True)
+    check6("boost refused for non-owner", any("Only the owner" in t for t in texts(a)))
+    a = handle_update({"update_id": 703, "message": {"chat": dm_owner, "from": owner, "text": "/boost on"}}, state, dry_run=True)
+    check6("boost turns on", state.get("referral_boost") is True)
+    a = handle_update({"update_id": 704, "message": {"chat": dm888, "from": newbie, "text": "/referral"}}, state, dry_run=True)
+    check6("boost doubles referral rewards", any("+100 XP" in t and "+40 XP" in t for t in texts(a)))
+    # New user joins through 777's link during the boost: referrer +200 (premium doubles the 100), new user +40.
+    code777 = state.get("referrals", {}).get("777", {}).get("code", "")
+    rookie = {"id": 999, "first_name": "Rookie"}
+    dm999 = {"id": 999, "type": "private"}
+    a = handle_update({"update_id": 705, "message": {"chat": dm999, "from": rookie, "text": f"/start ref_{code777}"}}, state, dry_run=True)
+    check6("boost referral gives referrer +200 XP", state.get("xp", {}).get("777", {}).get("xp") == 377)
+    check6("boost referral gives new user +40 XP", state.get("xp", {}).get("999", {}).get("xp") == 42)
+    a = handle_update({"update_id": 706, "message": {"chat": dm_owner, "from": owner, "text": "/boost auto"}}, state, dry_run=True)
+    check6("boost back to auto", state.get("referral_boost") is None)
+
+    # Giveaway: only admins start; join via button; draw picks the only entrant.
+    a = handle_update({"update_id": 707, "message": {"chat": group, "from": spammer, "text": "/giveaway premium"}}, state, dry_run=True)
+    check6("giveaway refused for non-admin", any("Only group admins" in t for t in texts(a)))
+    a = handle_update({"update_id": 708, "message": {"chat": group, "from": admin, "text": "/giveaway premium"}}, state, dry_run=True)
+    check6("giveaway starts with a join button", any(x.get("type") == "text" and x.get("keyboard") and "Join the giveaway" in str(x.get("keyboard")) for x in a))
+    a = handle_update({"update_id": 709, "callback_query": {"id": "cb1", "from": spammer, "data": "giveaway_join:-100123", "message": {"chat": group, "message_id": 50}}}, state, dry_run=True)
+    check6("joining adds the entrant", state.get("giveaways", {}).get("-100123", {}).get("entries") == [222])
+    check6("join toast says you are in", any(x.get("type") == "callback" and "You're in!" in x.get("text", "") for x in a))
+    a = handle_update({"update_id": 710, "callback_query": {"id": "cb2", "from": spammer, "data": "giveaway_join:-100123", "message": {"chat": group, "message_id": 50}}}, state, dry_run=True)
+    check6("joining twice is refused", any(x.get("type") == "callback" and "already in" in x.get("text", "") for x in a) and state.get("giveaways", {}).get("-100123", {}).get("entries") == [222])
+    a = handle_update({"update_id": 711, "message": {"chat": group, "from": admin, "text": "/draw"}}, state, dry_run=True)
+    check6("draw picks the winner and grants Premium", "222" in state.get("premium", {}) and any("WINNER" in t and "Spammer" in t for t in texts(a)))
+    check6("giveaway is cleared after the draw", "-100123" not in state.get("giveaways", {}))
+    # XP giveaway: winner gets the XP.
+    handle_update({"update_id": 712, "message": {"chat": group, "from": admin, "text": "/giveaway 100"}}, state, dry_run=True)
+    handle_update({"update_id": 713, "callback_query": {"id": "cb3", "from": bad, "data": "giveaway_join:-100123", "message": {"chat": group, "message_id": 51}}}, state, dry_run=True)
+    before = state.get("xp", {}).get("333", {}).get("xp", 0)
+    a = handle_update({"update_id": 714, "message": {"chat": group, "from": admin, "text": "/draw"}}, state, dry_run=True)
+    check6("XP giveaway pays the winner", state.get("xp", {}).get("333", {}).get("xp", 0) == before + 100 and any("+100 XP" in t for t in texts(a)))
+    # Cancel flow.
+    handle_update({"update_id": 715, "message": {"chat": group, "from": admin, "text": "/giveaway a shoutout"}}, state, dry_run=True)
+    a = handle_update({"update_id": 716, "message": {"chat": group, "from": admin, "text": "/endgiveaway"}}, state, dry_run=True)
+    check6("endgiveaway cancels the giveaway", "-100123" not in state.get("giveaways", {}) and any("ended" in t for t in texts(a)))
+    print(f"phase 6 checks: {len(fails)} failures")
     if fails:
         print("FAILED: " + "; ".join(fails))
         return 1
