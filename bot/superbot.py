@@ -344,7 +344,10 @@ HELP_TEXT = (
     "Growth & Premium\n"
     "/referral — your invite link, friends get +20 XP, you get +50 XP each\n"
     "/topreferrers — who invited the most friends\n"
-    "/premium — 150 Stars for lifetime Premium: double XP and a ⭐ badge"
+    "/premium — 150 Stars for lifetime Premium: double XP and a ⭐ badge\n\n"
+    "Channel & content (owner)\n"
+    "/broadcast — send a message to every subscriber\n"
+    "/schedulepost 18:30 text — queue a channel post, /scheduled to list, /cancelschedule to cancel"
     "\n\nInline: type @MuseVishnu_bot in any chat to send a quote, the Mini App or the channel."
 )
 
@@ -550,6 +553,7 @@ def load_state():
     state.setdefault("referrals", {})
     state.setdefault("referred_by", {})
     state.setdefault("premium", {})
+    state.setdefault("scheduled_posts", [])
     state.setdefault("users", {})
     state.setdefault("questions", [])
     state.setdefault("invite_codes", [])
@@ -1233,6 +1237,10 @@ BOT_COMMANDS = [
     ("referral", "Invite friends, earn XP"),
     ("topreferrers", "Top inviters"),
     ("premium", "Premium with Telegram Stars"),
+    ("broadcast", "Broadcast to all subscribers (owner)"),
+    ("schedulepost", "Schedule a channel post (owner)"),
+    ("scheduled", "List scheduled posts (owner)"),
+    ("cancelschedule", "Cancel a scheduled post (owner)"),
 ]
 
 
@@ -1645,6 +1653,47 @@ def ai_chat(prompt, dry_run=False):
     except Exception as e:
         print(f"pollinations chat failed: {e}", flush=True)
         return None
+
+
+def parse_schedule_time(args):
+    """Parse 'HH:MM text' or 'tomorrow HH:MM text' (Asia/Phnom_Penh) -> (epoch, text) or (None, error)."""
+    m = re.match(r"^(?:(tomorrow)\s+)?(\d{1,2}):(\d{2})\s+(.+)$", args.strip(), re.S)
+    if not m:
+        return None, "Use: /schedulepost 18:30 Your message — or /schedulepost tomorrow 09:00 Your message"
+    tomorrow, hh, mm, text = m.group(1), int(m.group(2)), int(m.group(3)), m.group(4).strip()
+    if hh > 23 or mm > 59 or not text:
+        return None, "That time doesn't look right. Use HH:MM, like 18:30."
+    now = phnom_penh_now()
+    base = now + datetime.timedelta(days=1) if tomorrow else now
+    target = base.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    if not tomorrow and target <= now:
+        target += datetime.timedelta(days=1)
+    return int(target.timestamp()), text
+
+
+def check_scheduled_posts(state):
+    """Posts whose time has come: send them to the channel and drop them from the queue."""
+    now = int(time.time())
+    channel_id = state.get("channel_id")
+    actions = []
+    due = [p for p in state.get("scheduled_posts", []) if p.get("at", 0) <= now]
+    if not due or not channel_id:
+        return actions
+    state["scheduled_posts"] = [p for p in state.get("scheduled_posts", []) if p.get("at", 0) > now]
+    for p in due:
+        actions.append({"type": "text", "chat_id": channel_id, "text": p.get("text", "")})
+    return actions
+
+
+def send_scheduled():
+    """Send any due scheduled channel posts. Returns the number sent."""
+    state = load_state()
+    actions = check_scheduled_posts(state)
+    if not actions:
+        return 0
+    execute_actions(actions, state)
+    save_state(state)
+    return len(actions)
 
 
 def ai_reply(state, uid, prompt, dry_run=False):
@@ -2660,6 +2709,56 @@ def handle_update(update, state, dry_run=False):
         else:
             reply("⭐ Daily News Premium — 150 Stars, lifetime.\n\nPerks: double XP on everything, a ⭐ badge in /rank and /leaderboard, and early access to new features.\n\nTap below to pay with Telegram Stars.")
             actions.append({"type": "invoice", "chat_id": chat_id, "title": "Daily News Premium", "description": "Lifetime Premium: double XP, a ⭐ badge, and early access to new features.", "payload": f"premium_{sender_id}", "currency": "XTR", "prices": [{"label": "Premium", "amount": 150}], "keyboard": {"inline_keyboard": [[{"text": "⭐ Pay 150 Stars", "pay": True}]]}})
+    elif command == "/broadcast":
+        if sender_id != OWNER_ID:
+            reply("Only the owner can broadcast.")
+        elif not args:
+            reply("Use: /broadcast Your message — I'll send it to every subscriber.")
+        else:
+            subs = state.get("subscribers", [])
+            if not subs:
+                reply("No subscribers yet — nobody has sent /daily. Your broadcast has nowhere to go.")
+            else:
+                for sub in subs:
+                    actions.append({"type": "text", "chat_id": int(sub), "text": f"📣 From Daily News:\n\n{args}"})
+                reply(f"Broadcast sent to {len(subs)} subscriber(s).")
+    elif command == "/schedulepost":
+        if sender_id != OWNER_ID:
+            reply("Only the owner can schedule channel posts.")
+        elif not args:
+            reply("Use: /schedulepost 18:30 Your message — or /schedulepost tomorrow 09:00 Your message")
+        else:
+            at, text_or_err = parse_schedule_time(args)
+            if at is None:
+                reply(text_or_err)
+            else:
+                pid = "sp_" + "".join(random.choice("ABCDEFGHJKLMNPQRSTUVWXYZ23456789") for _ in range(6))
+                state.setdefault("scheduled_posts", []).append({"id": pid, "text": text_or_err, "at": at, "by": sender_id})
+                when = datetime.datetime.fromtimestamp(at, tz=datetime.timezone(datetime.timedelta(hours=7))).strftime("%d %b %Y %H:%M")
+                reply(f"📅 Scheduled for the channel at {when} (Phnom Penh).\nID: {pid}\nSee /scheduled to list, /cancelschedule {pid} to cancel.")
+    elif command == "/scheduled":
+        if sender_id != OWNER_ID:
+            reply("Only the owner can see scheduled posts.")
+        else:
+            posts = state.get("scheduled_posts", [])
+            if not posts:
+                reply("No scheduled posts. Use /schedulepost HH:MM Your message to queue one.")
+            else:
+                lines = ["📅 Scheduled channel posts:\n"]
+                for p in posts:
+                    when = datetime.datetime.fromtimestamp(p.get("at", 0), tz=datetime.timezone(datetime.timedelta(hours=7))).strftime("%d %b %H:%M")
+                    lines.append(f"• {p.get('id')} — {when}\n  {p.get('text', '')[:80]}")
+                reply("\n".join(lines))
+    elif command == "/cancelschedule":
+        if sender_id != OWNER_ID:
+            reply("Only the owner can cancel scheduled posts.")
+        elif not args:
+            reply("Use: /cancelschedule sp_XXXXXX — see /scheduled for the IDs.")
+        else:
+            pid = args.strip().split()[0]
+            before = len(state.get("scheduled_posts", []))
+            state["scheduled_posts"] = [p for p in state.get("scheduled_posts", []) if p.get("id") != pid]
+            reply(f"Cancelled {pid}." if len(state["scheduled_posts"]) < before else f"No scheduled post with ID {pid}. See /scheduled.")
     elif command == "/info":
         title = chat.get("title") or chat.get("first_name") or "this chat"
         reply(f"This is {title} (chat id {chat_id}, type {chat.get('type')}). I'm @MuseVishnu_bot.")
@@ -3528,6 +3627,45 @@ def run_tests():
     a = handle_update({"update_id": 511, "message": {"chat": dm, "from": player, "text": "/leaderboard"}}, state, dry_run=True)
     check4("leaderboard shows the Premium star", any("Player ⭐" in t for t in texts(a)))
     print(f"phase 4 checks: {len(fails)} failures")
+    if fails:
+        print("FAILED: " + "; ".join(fails))
+        return 1
+
+    # Phase 5 (broadcast + scheduled posts) tests.
+    fails = []
+    def check5(label, cond):
+        print(("PASS " if cond else "FAIL ") + label)
+        if not cond:
+            fails.append(label)
+    owner = {"id": 5039926430, "first_name": "Owner"}
+    dm_owner = {"id": 5039926430, "type": "private"}
+
+    a = handle_update({"update_id": 601, "message": {"chat": dm, "from": player, "text": "/broadcast hello everyone"}}, state, dry_run=True)
+    check5("broadcast refused for non-owner", any("Only the owner" in t for t in texts(a)))
+    a = handle_update({"update_id": 602, "message": {"chat": dm_owner, "from": owner, "text": "/broadcast hello everyone"}}, state, dry_run=True)
+    check5("broadcast with no subscribers says so", any("No subscribers yet" in t for t in texts(a)))
+    state.setdefault("subscribers", []).extend([777, 888])
+    a = handle_update({"update_id": 603, "message": {"chat": dm_owner, "from": owner, "text": "/broadcast hello everyone"}}, state, dry_run=True)
+    check5("broadcast reaches every subscriber", sum(1 for x in a if x.get("type") == "text" and "hello everyone" in x.get("text", "")) == 2)
+    check5("broadcast confirms the count", any("2 subscriber" in t for t in texts(a)))
+
+    a = handle_update({"update_id": 604, "message": {"chat": dm_owner, "from": owner, "text": "/schedulepost 23:59 Test channel post"}}, state, dry_run=True)
+    check5("schedulepost queues a post", len(state.get("scheduled_posts", [])) == 1)
+    pid = state["scheduled_posts"][0]["id"]
+    check5("schedulepost confirms with the ID", any(pid in t for t in texts(a)))
+    a = handle_update({"update_id": 605, "message": {"chat": dm_owner, "from": owner, "text": "/scheduled"}}, state, dry_run=True)
+    check5("scheduled lists the post", any(pid in t and "Test channel post" in t for t in texts(a)))
+    state["scheduled_posts"][0]["at"] = int(time.time()) - 10
+    due = check_scheduled_posts(state)
+    check5("due post is sent to the channel", len(due) == 1 and due[0].get("chat_id") == state.get("channel_id") and "Test channel post" in due[0].get("text", ""))
+    check5("sent post is removed from the queue", len(state.get("scheduled_posts", [])) == 0)
+    a = handle_update({"update_id": 606, "message": {"chat": dm_owner, "from": owner, "text": "/schedulepost tomorrow 09:00 Another post"}}, state, dry_run=True)
+    pid2 = state["scheduled_posts"][0]["id"]
+    a = handle_update({"update_id": 607, "message": {"chat": dm_owner, "from": owner, "text": f"/cancelschedule {pid2}"}}, state, dry_run=True)
+    check5("cancelschedule removes the post", len(state.get("scheduled_posts", [])) == 0 and any("Cancelled" in t for t in texts(a)))
+    a = handle_update({"update_id": 608, "message": {"chat": dm_owner, "from": owner, "text": "/schedulepost badtime oops"}}, state, dry_run=True)
+    check5("bad schedule time is rejected", any("Use: /schedulepost" in t for t in texts(a)))
+    print(f"phase 5 checks: {len(fails)} failures")
     if fails:
         print("FAILED: " + "; ".join(fails))
         return 1

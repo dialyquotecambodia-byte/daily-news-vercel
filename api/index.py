@@ -122,10 +122,11 @@ def cron_morning():
     try:
         daily = sb.send_daily()
         story = sb.send_story()
+        scheduled = sb.send_scheduled()
     except Exception as e:
         print(f"cron-morning error: {e}", flush=True)
         return {"ok": False, "error": str(e)}, 500
-    return {"ok": True, "daily_sent": daily, "story_sent": story}, 200
+    return {"ok": True, "daily_sent": daily, "story_sent": story, "scheduled_sent": scheduled}, 200
 
 
 def cron_evening():
@@ -133,10 +134,11 @@ def cron_evening():
         return {"ok": False, "error": "unauthorized"}, 401
     try:
         sent = sb.send_evening()
+        scheduled = sb.send_scheduled()
     except Exception as e:
         print(f"cron-evening error: {e}", flush=True)
         return {"ok": False, "error": str(e)}, 500
-    return {"ok": True, "evening_sent": sent}, 200
+    return {"ok": True, "evening_sent": sent, "scheduled_sent": scheduled}, 200
 
 
 def post_news_get():
