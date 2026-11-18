@@ -331,6 +331,30 @@ vendored fonts. To try the KV backend locally, set `STATE_BACKEND=kv` plus
 - Command menu is now 86 commands. Dry-run suite: 54 + 35 + 20 + 15 + 6
   Khmer + 17 Phase 4 + 12 Phase 5 checks, all passing.
 
+## Phase 6 — Growth engine: giveaways, share, referral boost (2026-11-19)
+
+- **Giveaways:** `/giveaway premium` / `/giveaway 100` / `/giveaway <custom
+  prize>` (group only, admin only) posts an announcement with a "🎉 Join
+  the giveaway" inline button. Tapping it adds the user once (toast:
+  "You're in! Good luck! 🍀", "You're already in!" on repeats,
+  "This giveaway is over." when gone). `/draw` (admin or starter) picks
+  a random entrant: Premium prize unlocks lifetime Premium, an XP prize
+  pays that much XP, a custom prize pays +50 XP; the giveaway is then
+  cleared. `/endgiveaway` cancels without a winner. `/giveaway` with no
+  args shows the live giveaway's status.
+- **Share kit:** `/share` sends a ready-to-forward promo (channel, Mini
+  App, bot, and the sender's referral link).
+- **Referral boost:** `referral_boost_active()` — double referral rewards
+  when forced on, forced off, or automatically on Saturday and Sunday
+  (Phnom Penh). `/boost on|off|auto` (owner only) controls it. Boosted
+  rewards: +100 XP referrer / +40 XP new user (before Premium doubling);
+  standard: +50 / +20. `/referral` and the `/start` welcome show the
+  current rewards and a boost line when active.
+- A welcome campaign post announcing giveaways, referrals and Premium
+  was posted live to @dailynewsreporter (message_id 14).
+- Command menu is now 91 commands. Dry-run suite: 54 + 35 + 20 + 15 + 6
+  Khmer + 17 Phase 4 + 12 Phase 5 + 18 Phase 6 checks, all passing.
+
 ## Free-tier limits that matter
 
 - **Vercel Hobby functions:** default max 10s per invocation; `vercel.json`
