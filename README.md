@@ -415,6 +415,16 @@ Dry-run suite: 54 + 35 + 20 + 15 + 6 + 17 + 12 + 18 + 26 + 10 Phase 8 checks, al
 
 Dry-run suite: 54 + 35 + 20 + 15 + 6 + 17 + 12 + 18 + 26 + 10 + 6 Phase 9 checks, all passing; webhook/cron harnesses still 25/25 + 20/20.
 
+## Bilingual Pack — full English–Khmer interface (2026-11-19)
+
+- **/language** (also /lang) — an inline EN | ខ្មែរ switch stored per user in `users[uid]["lang"]` (the old "Reply in Khmer/English" natural-language switch still works too).
+- **Full Khmer help** — `HELP_TEXT_KH` (~5,900 chars) translates the whole help; /start and /help use it for Khmer users, English otherwise.
+- **Menu in your language** — /menu shows Khmer button labels for Khmer users, and the Khmer taps work exactly like the English ones (💬 សម្រង់, 📰 ព័ត៌មាន, 🎮 ល្បែង, ❤️ ស្នេហា, 🤝 មិត្តភាព, 🎯 សំណួរ, 📅 កាលវិភាគ, ℹ️ ជំនួយ).
+- **Core replies in your language** — /rank, /leaderboard, /mystats, /checkin, the thanks fallback, the unknown-command reply, and the admin/owner error messages all answer in the user's language (via an `I18N` table and a `tr()` helper). The AI already replies in Khmer when lang is kh.
+- New command: `/language`. To keep the menu at 100, `/summarize` was hidden from the menu — it still works. **117 commands work in total**, menu shows 100.
+
+Dry-run suite: 54 + 35 + 20 + 15 + 6 + 17 + 12 + 18 + 26 + 10 + 6 + 13 + 16 + 16 Phase 12 checks, all passing; webhook/cron harnesses still 25/25 + 20/20. (The Phase 3b tests now reset the test user's language to English, so later phases see English replies.)
+
 ## Smart Pack — smarter AI + more group power (2026-11-19)
 
 - **AI conversation memory** — `ai_reply` now keeps the last 3 exchanges per user in `ai_history` and passes them to the AI (OpenAI chat messages, or a transcript for the free Pollinations API), so the bot can follow up instead of answering each message cold.
