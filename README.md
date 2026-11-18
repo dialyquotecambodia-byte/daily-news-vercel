@@ -415,6 +415,22 @@ Dry-run suite: 54 + 35 + 20 + 15 + 6 + 17 + 12 + 18 + 26 + 10 Phase 8 checks, al
 
 Dry-run suite: 54 + 35 + 20 + 15 + 6 + 17 + 12 + 18 + 26 + 10 + 6 Phase 9 checks, all passing; webhook/cron harnesses still 25/25 + 20/20.
 
+## Fix pack — Vercel-era breaks repaired (2026-11-19)
+
+Three things that silently broke when the bot moved to Vercel are fixed:
+
+- **Anti-spam flood mute works again.** The flood tracker was a module-level dict that reset on every Vercel invocation, so a spammer was never muted. It now lives in the KV state (`state["flood_tracker"]`, pruned to the last 10 seconds) and the mute triggers as it should.
+- **Reminders fire even when nobody messages.** Due reminders were only delivered on the next incoming update. The morning and evening Vercel crons now deliver them too (`send_reminders()`), so a reminder fires at 08:42 or 18:42 at the latest.
+- **Quote no-repeat works again.** The last-5-quotes memory was also in-memory; it now lives in `state["recent_quotes"]`, so quotes don't repeat across invocations.
+
+## Achievements — badges (2026-11-19)
+
+- **12 badges**, awarded automatically and announced in chat when unlocked: First Quote, Quiz Rookie, Quiz Master (10 correct), Week Streak (7 days), Month Streak (30 days), Level 5, Level 10, Chatterbox (100 messages), First Invite, Super Inviter (5 invites), Tournament Champion, Premium.
+- **/achievements** — shows your badges (✅ unlocked / 🔒 locked) with how to earn each, in English or Khmer. **/rank** now shows your badge icons.
+- New command: `/achievements`. To keep the menu at 100, `/score` was hidden from the menu — it still works. **118 commands work in total**, menu shows 100.
+
+Dry-run suite: 54 + 35 + 20 + 15 + 6 + 17 + 12 + 18 + 26 + 10 + 6 + 13 + 16 + 16 + 15 Phase 13 checks, all passing; webhook/cron harnesses still 25/25 + 20/20.
+
 ## Bilingual Pack — full English–Khmer interface (2026-11-19)
 
 - **/language** (also /lang) — an inline EN | ខ្មែរ switch stored per user in `users[uid]["lang"]` (the old "Reply in Khmer/English" natural-language switch still works too).
