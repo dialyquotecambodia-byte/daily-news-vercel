@@ -730,9 +730,9 @@ def message_lock_types(message):
     return types
 
 
-def is_privileged(state, chat_id, user_id, dry_run=False):
+def is_privileged(state, chat_id, user_id, dry_run=False, sender_chat_id=None):
     """Admins and approved users bypass group enforcement (locks, links, flood, blacklist, fsub)."""
-    if is_admin(chat_id, user_id, dry_run=dry_run):
+    if is_admin(chat_id, user_id, dry_run=dry_run, sender_chat_id=sender_chat_id):
         return True
     settings = get_group_settings(state, chat_id)
     return str(user_id) in [str(u) for u in settings.get("approved", [])]
@@ -740,7 +740,7 @@ def is_privileged(state, chat_id, user_id, dry_run=False):
 
 def locked_type_hit(state, chat_id, sender_id, message, dry_run=False):
     """First locked content type this message hits, or None (admins and approved users bypass)."""
-    if is_privileged(state, chat_id, sender_id, dry_run=dry_run):
+    if is_privileged(state, chat_id, sender_id, dry_run=dry_run, sender_chat_id=(message.get("sender_chat") or {}).get("id")):
         return None
     locks = get_group_settings(state, chat_id).get("locks", {})
     if locks.get("all"):
@@ -751,7 +751,10 @@ def locked_type_hit(state, chat_id, sender_id, message, dry_run=False):
     return None
 
 
-def is_admin(chat_id, user_id, dry_run=False):
+def is_admin(chat_id, user_id, dry_run=False, sender_chat_id=None):
+    # Anonymous group admins post as the group itself (sender_chat == the group, no "from").
+    if not user_id and sender_chat_id and sender_chat_id == chat_id:
+        return True
     if dry_run:
         # In tests, user 111 is the group admin, everyone else is not.
         return user_id == 111
@@ -2023,6 +2026,8 @@ def handle_update(update, state, dry_run=False):
     chat_id = chat.get("id")
     if not chat_id:
         return actions
+    # Anonymous group admins post as the group itself (sender_chat == the group, no "from").
+    _schat = (message.get("sender_chat") or {}).get("id")
 
     new_members = message.get("new_chat_members", [])
     for member in new_members:
@@ -2079,7 +2084,7 @@ def handle_update(update, state, dry_run=False):
     if chat.get("type", "") in ("group", "supergroup"):
         _fs = get_group_settings(state, chat_id).get("fsub", "")
         _fu = (message.get("from") or {}).get("id")
-        if _fs and not is_privileged(state, chat_id, _fu, dry_run=dry_run):
+        if _fs and not is_privileged(state, chat_id, _fu, dry_run=dry_run, sender_chat_id=_schat):
             actions.append({"type": "fsub_check", "chat_id": chat_id, "user_id": _fu, "message_id": message.get("message_id"), "channel": _fs})
             return actions
 
@@ -2090,7 +2095,7 @@ def handle_update(update, state, dry_run=False):
         _sid = (message.get("from") or {}).get("id")
         if _ctype in ("group", "supergroup"):
             settings = get_group_settings(state, chat_id)
-            if not is_admin(chat_id, _sid, dry_run=dry_run) and sticker.get("file_unique_id") in settings.get("blacklist_stickers", []):
+            if not is_admin(chat_id, _sid, dry_run=dry_run, sender_chat_id=_schat) and sticker.get("file_unique_id") in settings.get("blacklist_stickers", []):
                 actions.append({"type": "delete", "chat_id": chat_id, "message_id": message.get("message_id")})
         return actions
 
@@ -2126,7 +2131,7 @@ def handle_update(update, state, dry_run=False):
     msg_leveled = award_message_xp(state, sender_id, sender.get("first_name", "friend"))
     if chat_type in ("group", "supergroup") and not text.startswith("/"):
         settings = get_group_settings(state, chat_id)
-        admin = is_privileged(state, chat_id, sender_id, dry_run=dry_run)
+        admin = is_privileged(state, chat_id, sender_id, dry_run=dry_run, sender_chat_id=_schat)
         if not admin and settings.get("antilink") and ("http://" in text or "https://" in text or "t.me/" in text):
             actions.append({"type": "delete", "chat_id": chat_id, "message_id": message.get("message_id")})
             actions.append({"type": "text", "chat_id": chat_id, "text": f"Links are not allowed here, {sender.get('first_name', 'friend')}."})
@@ -2188,7 +2193,7 @@ def handle_update(update, state, dry_run=False):
 
     # Disabled commands (Rose-style): deleted in groups, admins bypass.
     if chat_type in ("group", "supergroup") and command.startswith("/"):
-        if command in get_group_settings(state, chat_id).get("disabled", []) and not is_admin(chat_id, sender_id, dry_run=dry_run):
+        if command in get_group_settings(state, chat_id).get("disabled", []) and not is_admin(chat_id, sender_id, dry_run=dry_run, sender_chat_id=_schat):
             actions.append({"type": "delete", "chat_id": chat_id, "message_id": message.get("message_id")})
             return actions
 
@@ -2337,7 +2342,7 @@ def handle_update(update, state, dry_run=False):
         gchat = admin_chat
         if chat_type not in ("group", "supergroup") and not connected_group:
             reply("Admin commands only work in a group. Add me to a group and make me an admin, or connect to one with /connect.")
-        elif not is_admin(gchat, sender_id, dry_run=dry_run):
+        elif not is_admin(gchat, sender_id, dry_run=dry_run, sender_chat_id=_schat):
             if not dry_run and not bot_is_admin(gchat, dry_run=dry_run):
                 reply("I need to be an admin in this group first — make me an admin (Group settings → Administrators → add @MuseVishnu_bot), then try again.")
             else:
@@ -2478,7 +2483,7 @@ def handle_update(update, state, dry_run=False):
                     log_event(state, actions, gchat, f"⏱️ {target_name} was temp-banned for {seconds // 60} minute(s) in {chat.get('title', gchat)} by {sender.get('first_name', 'an admin')}.")
     elif command in ("/newfed", "/delfed", "/joinfed", "/leavefed", "/fedinfo", "/fedlist", "/fedbans", "/fban", "/unfban"):
         if command == "/newfed":
-            if chat_type in ("group", "supergroup") and not is_admin(chat_id, sender_id, dry_run=dry_run):
+            if chat_type in ("group", "supergroup") and not is_admin(chat_id, sender_id, dry_run=dry_run, sender_chat_id=_schat):
                 reply("Only group admins can create a federation.")
             elif not args:
                 reply("Create a federation like this: /newfed Daily News Fed — groups that join it share bans.")
@@ -2500,7 +2505,7 @@ def handle_update(update, state, dry_run=False):
         elif command == "/joinfed":
             if chat_type not in ("group", "supergroup") and not connected_group:
                 reply("Use /joinfed inside a group (or connect to one first with /connect).")
-            elif not is_admin(admin_chat, sender_id, dry_run=dry_run):
+            elif not is_admin(admin_chat, sender_id, dry_run=dry_run, sender_chat_id=_schat):
                 reply("Only group admins can join a federation.")
             else:
                 fid = args.split()[0] if args.split() else ""
@@ -2515,7 +2520,7 @@ def handle_update(update, state, dry_run=False):
         elif command == "/leavefed":
             if chat_type not in ("group", "supergroup") and not connected_group:
                 reply("Use /leavefed inside a group (or connect to one first).")
-            elif not is_admin(admin_chat, sender_id, dry_run=dry_run):
+            elif not is_admin(admin_chat, sender_id, dry_run=dry_run, sender_chat_id=_schat):
                 reply("Only group admins can leave a federation.")
             else:
                 fid, fed = group_fed(state, admin_chat)
@@ -2554,7 +2559,7 @@ def handle_update(update, state, dry_run=False):
             fid, fed = group_fed(state, admin_chat)
             if not fed:
                 reply("This group is not in any federation. Create one with /newfed Name or join one with /joinfed FED-ID.")
-            elif fed.get("owner") != sender_id and not is_admin(admin_chat, sender_id, dry_run=dry_run):
+            elif fed.get("owner") != sender_id and not is_admin(admin_chat, sender_id, dry_run=dry_run, sender_chat_id=_schat):
                 reply("Only the federation owner or a group admin can do that.")
             else:
                 target_id, target_name = target_user(message, args)
@@ -2586,7 +2591,7 @@ def handle_update(update, state, dry_run=False):
             reply("Notes and filters work in a group. Add me to a group, or connect with /connect.")
         else:
             settings = get_group_settings(state, admin_chat)
-            if command in ("/save", "/clear", "/filter", "/stop") and not is_admin(admin_chat, sender_id, dry_run=dry_run):
+            if command in ("/save", "/clear", "/filter", "/stop") and not is_admin(admin_chat, sender_id, dry_run=dry_run, sender_chat_id=_schat):
                 reply("Only group admins can do that.")
             elif command == "/save":
                 parts = args.split(None, 1)
@@ -2638,7 +2643,7 @@ def handle_update(update, state, dry_run=False):
     elif command == "/captcha":
         if chat_type not in ("group", "supergroup") and not connected_group:
             reply("Use /captcha inside a group (or connect with /connect).")
-        elif not is_admin(admin_chat, sender_id, dry_run=dry_run):
+        elif not is_admin(admin_chat, sender_id, dry_run=dry_run, sender_chat_id=_schat):
             reply("Only group admins can do that.")
         else:
             on = args.lower() in ("on", "yes", "true", "1")
@@ -2667,7 +2672,7 @@ def handle_update(update, state, dry_run=False):
     elif command in ("/addblacklist", "/rmblacklist", "/blacklist", "/blacklistmode", "/addsticker", "/rmsticker", "/stickers"):
         if chat_type not in ("group", "supergroup") and not connected_group:
             reply("Blacklists work in a group. Add me to a group, or connect with /connect.")
-        elif not is_admin(admin_chat, sender_id, dry_run=dry_run):
+        elif not is_admin(admin_chat, sender_id, dry_run=dry_run, sender_chat_id=_schat):
             reply("Only group admins can do that.")
         else:
             settings = get_group_settings(state, admin_chat)
@@ -2720,7 +2725,7 @@ def handle_update(update, state, dry_run=False):
     elif command == "/settings":
         if chat_type not in ("group", "supergroup") and not connected_group:
             reply("Open settings inside a group, or connect to one first with /connect.")
-        elif not is_admin(admin_chat, sender_id, dry_run=dry_run):
+        elif not is_admin(admin_chat, sender_id, dry_run=dry_run, sender_chat_id=_schat):
             reply("Only group admins can change settings.")
         else:
             settings = get_group_settings(state, admin_chat)
@@ -2751,7 +2756,7 @@ def handle_update(update, state, dry_run=False):
     elif command in ("/promote", "/demote", "/purge"):
         if chat_type not in ("group", "supergroup") and not connected_group:
             reply("Use that inside a group (or connect with /connect).")
-        elif not is_admin(admin_chat, sender_id, dry_run=dry_run):
+        elif not is_admin(admin_chat, sender_id, dry_run=dry_run, sender_chat_id=_schat):
             reply("Only group admins can do that.")
         elif command == "/purge":
             replied_id = (message.get("reply_to_message") or {}).get("message_id")
@@ -2815,7 +2820,7 @@ def handle_update(update, state, dry_run=False):
         t = state.get("tournaments", {}).get(str(chat_id))
         if not t:
             reply("No tournament running here. Start one with /tournament!")
-        elif not is_admin(chat_id, sender_id, dry_run=dry_run) and sender_id != t.get("starter"):
+        elif not is_admin(chat_id, sender_id, dry_run=dry_run, sender_chat_id=_schat) and sender_id != t.get("starter"):
             reply("Only a group admin or the player who started the tournament can end it.")
         else:
             if t.get("players"):
@@ -2852,7 +2857,7 @@ def handle_update(update, state, dry_run=False):
     elif command == "/aimod":
         if chat_type not in ("group", "supergroup") and not connected_group:
             reply("AI moderation is a group setting — use it in a group.")
-        elif not is_admin(admin_chat, sender_id, dry_run=dry_run):
+        elif not is_admin(admin_chat, sender_id, dry_run=dry_run, sender_chat_id=_schat):
             reply("Only group admins can change AI moderation.")
         elif args.strip().lower() in ("on", "off"):
             settings = get_group_settings(state, admin_chat)
@@ -2864,7 +2869,7 @@ def handle_update(update, state, dry_run=False):
     elif command == "/setlog":
         if chat_type not in ("group", "supergroup") and not connected_group:
             reply("The log channel is a group setting — use /setlog in a group.")
-        elif not is_admin(admin_chat, sender_id, dry_run=dry_run):
+        elif not is_admin(admin_chat, sender_id, dry_run=dry_run, sender_chat_id=_schat):
             reply("Only group admins can set the log channel.")
         elif not args or args.strip().lower() == "off":
             state.setdefault("log_channels", {}).pop(str(admin_chat), None)
@@ -2879,7 +2884,7 @@ def handle_update(update, state, dry_run=False):
     elif command == "/backup":
         if chat_type not in ("group", "supergroup") and not connected_group:
             reply("Backups are for groups — use /backup in a group.")
-        elif not is_admin(admin_chat, sender_id, dry_run=dry_run):
+        elif not is_admin(admin_chat, sender_id, dry_run=dry_run, sender_chat_id=_schat):
             reply("Only group admins can back up the group settings.")
         else:
             settings = get_group_settings(state, admin_chat)
@@ -2891,7 +2896,7 @@ def handle_update(update, state, dry_run=False):
     elif command == "/restore":
         if chat_type not in ("group", "supergroup") and not connected_group:
             reply("Restore is for groups — use /restore in a group.")
-        elif not is_admin(admin_chat, sender_id, dry_run=dry_run):
+        elif not is_admin(admin_chat, sender_id, dry_run=dry_run, sender_chat_id=_schat):
             reply("Only group admins can restore the group settings.")
         elif not args:
             reply("Paste the backup JSON after /restore, like /restore {\"antilink\": true, ...}")
@@ -2992,7 +2997,7 @@ def handle_update(update, state, dry_run=False):
     elif command == "/giveaway":
         if chat_type not in ("group", "supergroup"):
             reply("Giveaways run in groups — add me to a group and run /giveaway there.")
-        elif not is_admin(chat_id, sender_id, dry_run=dry_run):
+        elif not is_admin(chat_id, sender_id, dry_run=dry_run, sender_chat_id=_schat):
             reply("Only group admins can start a giveaway.")
         else:
             existing = state.get("giveaways", {}).get(str(chat_id))
@@ -3014,7 +3019,7 @@ def handle_update(update, state, dry_run=False):
             g = state.get("giveaways", {}).get(str(chat_id))
             if not g:
                 reply("No giveaway is running here. Start one with /giveaway.")
-            elif not (is_admin(chat_id, sender_id, dry_run=dry_run) or sender_id == g.get("starter")):
+            elif not (is_admin(chat_id, sender_id, dry_run=dry_run, sender_chat_id=_schat) or sender_id == g.get("starter")):
                 reply("Only a group admin or the giveaway starter can draw the winner.")
             elif not g.get("entries"):
                 reply("Nobody entered yet — the giveaway is still open! Tap the Join button on the giveaway post to enter.")
@@ -3039,7 +3044,7 @@ def handle_update(update, state, dry_run=False):
             g = state.get("giveaways", {}).get(str(chat_id))
             if not g:
                 reply("No giveaway is running here.")
-            elif not (is_admin(chat_id, sender_id, dry_run=dry_run) or sender_id == g.get("starter")):
+            elif not (is_admin(chat_id, sender_id, dry_run=dry_run, sender_chat_id=_schat) or sender_id == g.get("starter")):
                 reply("Only a group admin or the giveaway starter can end it.")
             else:
                 del state["giveaways"][str(chat_id)]
@@ -3083,7 +3088,7 @@ def handle_update(update, state, dry_run=False):
     elif command in ("/disable", "/enable", "/disabled"):
         if chat_type not in ("group", "supergroup") and not connected_group:
             reply("Use this in a group (or connect to one with /connect).")
-        elif not is_admin(admin_chat, sender_id, dry_run=dry_run):
+        elif not is_admin(admin_chat, sender_id, dry_run=dry_run, sender_chat_id=_schat):
             reply("Only group admins can change disabled commands.")
         elif command == "/disabled":
             disabled = get_group_settings(state, admin_chat).get("disabled", [])
@@ -3107,7 +3112,7 @@ def handle_update(update, state, dry_run=False):
     elif command in ("/approve", "/unapprove", "/approved"):
         if chat_type not in ("group", "supergroup") and not connected_group:
             reply("Use this in a group (or connect to one with /connect).")
-        elif not is_admin(admin_chat, sender_id, dry_run=dry_run):
+        elif not is_admin(admin_chat, sender_id, dry_run=dry_run, sender_chat_id=_schat):
             reply("Only group admins can approve members.")
         elif command == "/approved":
             approved = get_group_settings(state, admin_chat).get("approved", [])
@@ -3128,7 +3133,7 @@ def handle_update(update, state, dry_run=False):
     elif command == "/setflood":
         if chat_type not in ("group", "supergroup") and not connected_group:
             reply("Use this in a group (or connect to one with /connect).")
-        elif not is_admin(admin_chat, sender_id, dry_run=dry_run):
+        elif not is_admin(admin_chat, sender_id, dry_run=dry_run, sender_chat_id=_schat):
             reply("Only group admins can set the flood limit.")
         elif not args.strip().isdigit():
             reply(f"Flood limit is {get_group_settings(state, admin_chat).get('flood_limit', 5)} messages in 10 seconds. Set it with /setflood 8")
@@ -3139,7 +3144,7 @@ def handle_update(update, state, dry_run=False):
     elif command == "/setgoodbye":
         if chat_type not in ("group", "supergroup") and not connected_group:
             reply("Use this in a group (or connect to one with /connect).")
-        elif not is_admin(admin_chat, sender_id, dry_run=dry_run):
+        elif not is_admin(admin_chat, sender_id, dry_run=dry_run, sender_chat_id=_schat):
             reply("Only group admins can set the goodbye message.")
         else:
             get_group_settings(state, admin_chat)["goodbye"] = args
@@ -3147,7 +3152,7 @@ def handle_update(update, state, dry_run=False):
     elif command == "/fsub":
         if chat_type not in ("group", "supergroup") and not connected_group:
             reply("Use this in a group (or connect to one with /connect).")
-        elif not is_admin(admin_chat, sender_id, dry_run=dry_run):
+        elif not is_admin(admin_chat, sender_id, dry_run=dry_run, sender_chat_id=_schat):
             reply("Only group admins can set force-subscribe.")
         elif not args:
             cur = get_group_settings(state, admin_chat).get("fsub", "")
@@ -4209,6 +4214,15 @@ def run_tests():
     # Non-admins get the plain "only admins" reply (the bot itself is admin in dry-run, so no promote hint).
     a = handle_update({"update_id": 826, "message": {"chat": group, "from": spammer, "text": "/lock sticker"}}, state, dry_run=True)
     check7("non-admin gets the admin-only reply", any("Only group admins" in t for t in texts(a)))
+    # Anonymous admins post as the group itself (sender_chat == group, no "from") — they ARE admins.
+    anon_lock = {"chat": group, "sender_chat": {"id": -100123}, "text": "/lock photo"}
+    a = handle_update({"update_id": 827, "message": anon_lock}, state, dry_run=True)
+    check7("anonymous admin can lock", state.get("group_settings", {}).get("-100123", {}).get("locks", {}).get("photo") is True)
+    a = handle_update({"update_id": 828, "message": {"chat": group, "sender_chat": {"id": -100123}, "sticker": {"file_unique_id": "xyz"}, "message_id": 67}}, state, dry_run=True)
+    check7("anonymous admin bypasses the sticker lock", not any(x.get("type") == "delete" for x in a))
+    # A message sent on behalf of some OTHER chat is not an admin.
+    a = handle_update({"update_id": 829, "message": {"chat": group, "sender_chat": {"id": -100999}, "text": "/lock photo"}}, state, dry_run=True)
+    check7("other-chat sender is not an admin", any("Only group admins" in t for t in texts(a)))
     print(f"phase 7 checks: {len(fails)} failures")
     if fails:
         print("FAILED: " + "; ".join(fails))
