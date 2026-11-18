@@ -387,6 +387,24 @@ vendored fonts. To try the KV backend locally, set `STATE_BACKEND=kv` plus
   Dry-run suite: 54 + 35 + 20 + 15 + 6 Khmer + 17 Phase 4 + 12 Phase 5
   + 18 Phase 6 + 22 Phase 7 checks, all passing.
 
+## Rose Power Pack 3 + the real anonymous-admin fix (2026-11-19)
+
+The admin-check incident had a third layer. Anonymous group admins do **not** send messages with an empty `from` — Telegram sends them from **GroupAnonymousBot (id 1087968824)** with `sender_chat` == the group. The first fix (which only handled an absent `from`) therefore did not cover the user's real messages. Fixed in `is_admin` (main 08679c8f): a message counts as admin when `sender_chat == chat_id` and the sender is GroupAnonymousBot (or absent). Posting as the group's linked channel also counts (via `getChat` → `linked_chat_id`). Verified live by replaying the user's exact anonymous message shape through the webhook — `/lock photo` was accepted and the live state now shows `locks: {'sticker': True, 'photo': True}` in "Daily News chat". A sticker from a regular member was also replayed live and returned a delete action, proving the lock enforces.
+
+Two cleanups came with the fix: `track_user` and `award_message_xp` now ignore GroupAnonymousBot, so it can no longer pollute the user count, message stats, XP or the leaderboard (its records were removed from live KV state). And `execute_actions` now wraps every action in its own try/except — one failing action (e.g. deleting an already-deleted message) can no longer crash the whole webhook and lose the state save.
+
+New group powers in this pack:
+
+- **Anti-raid** — `/antiraid on|off` (also in the /settings panel). When on, 5 joins within 60 seconds mute the newcomers (an admin can /unmute them). Join timestamps live in state `join_tracker`.
+- **Welcome buttons** — the welcome message now carries a 📜 **Rules** button (callback `rules:<gid>` shows the group's rules, or a "no rules yet" note) and a 📱 **Daily News App** button.
+- **Clean service messages** — `/cleanservice on|off` (also in /settings). When on, the "X joined" / "X left" service messages are deleted.
+- **Anti-channel** — `/antichannel on|off` (also in /settings). When on, messages sent as a channel are deleted, except the group's linked channel and admins.
+- **Settings panel** — anti-raid, clean service and anti-channel toggles added alongside the existing ones.
+
+New settings defaults and backup/restore keys: `antiraid`, `cleanservice`, `antichannel` (all False by default). New commands: `/antiraid`, `/cleanservice`, `/antichannel`. To keep the Telegram menu at 99 (the cap is 100), `/setflood`, `/setgoodbye` and `/fsub` were removed from the menu — they still work when typed and are documented in /help. Total working commands: 107, menu shows 99.
+
+Dry-run suite: 54 + 35 + 20 + 15 + 6 + 17 + 12 + 18 + 26 + 10 Phase 8 checks, all passing; webhook/cron harnesses still 25/25 + 20/20.
+
 ## Free-tier limits that matter
 
 - **Vercel Hobby functions:** default max 10s per invocation; `vercel.json`
