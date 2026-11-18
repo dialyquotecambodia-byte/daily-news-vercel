@@ -18,3 +18,4 @@ heartbeat.json.tmp
 # OS
 .DS_Store
 Thumbs.db
+.env*

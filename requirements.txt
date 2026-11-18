@@ -1,4 +1,6 @@
 # Pillow renders the quote / story / banner images (1080x1080 and 1080x1920).
 # Pinned to the version verified locally (raqm support on, so Khmer shaping works).
-# No Flask: the api/* functions use stdlib BaseHTTPRequestHandler only.
+# Flask serves the single api/index.py entrypoint (see README: the Vercel
+# Python runtime no longer accepts one BaseHTTPRequestHandler per file).
 Pillow==10.2.0
+Flask==3.1.0

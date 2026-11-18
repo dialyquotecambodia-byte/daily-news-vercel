@@ -10,15 +10,15 @@ the VM until cutover (see below) — this repo does not touch it.
 ## Architecture
 
 ```
-Telegram ──POST update──> /api/webhook.py ──> bot/superbot.py
-                              │  load state (KV)          (handle_update +
-                              │  run actions (Telegram)    execute_actions,
-                              │  save state (KV)           unchanged logic)
+Telegram ──POST update──> /api/webhook ──> api/index.py (Flask) ──> bot/superbot.py
+                              │  load state (KV)                   (handle_update +
+                              │  run actions (Telegram)             execute_actions,
+                              │  save state (KV)                    unchanged logic)
                               └── 200 {"ok": true}
 
-Vercel Cron 01:42 UTC ──> /api/cron-morning.py ──> send_daily() + send_story()
-Vercel Cron 11:42 UTC ──> /api/cron-evening.py ──> send_evening()
-VM research cron ──POST──> /api/post-news.py ──> send_news() (12:42 news post)
+Vercel Cron 01:42 UTC ──> /api/cron-morning ──> send_daily() + send_story()
+Vercel Cron 11:42 UTC ──> /api/cron-evening ──> send_evening()
+VM research cron ──POST──> /api/post-news ──> send_news() (12:42 news post)
 ```
 
 - **Webhook, not polling.** Vercel functions are short-lived; there is no
@@ -36,10 +36,14 @@ VM research cron ──POST──> /api/post-news.py ──> send_news() (12:42 
   base64 text (`*.ttf.b64`); the bot decodes them to the temp dir on first use.
   (both freely redistributable: DejaVu license, SIL OFL). Pillow's
   manylinux wheels include raqm, so Khmer shaping works there too.
-- **No Flask.** The `api/*` functions use stdlib `BaseHTTPRequestHandler`
-  only, which is the documented Vercel Python pattern (one `handler` class
-  per file under `api/`). `requirements.txt` is Pillow only, which keeps
-  cold starts fast.
+- **One Flask entrypoint, not one file per route.** `api/index.py` is a
+  Flask app serving all four routes, and `vercel.json` rewrites `/api/*`
+  to it. The first deploy (2026-11-18) used one stdlib
+  `BaseHTTPRequestHandler` per file under `api/` — the documented pattern
+  — but `vercel build` (CLI 65+) rejected it with "No Flask entrypoint
+  found in default locations" and demanded a single entrypoint. Do not
+  split `api/index.py` back into per-route files; the build will fail
+  again.
 
 ## Project layout
 
@@ -48,12 +52,9 @@ VM research cron ──POST──> /api/post-news.py ──> send_news() (12:42 
 | `bot/superbot.py` | The bot, vendored from the live VM bot. Only hosting changes: token from `TELEGRAM_BOT_TOKEN`, KV/file state backends, vendored fonts. All commands, games, menu, inline, group admin, quote images, CLI modes unchanged. |
 | `bot/vercel_common.py` | Shared cron-secret check for the `api/*` endpoints. |
 | `bot/fonts/` | DejaVuSans, DejaVuSans-Bold, NotoSansKhmer-Regular as base64 text (`*.ttf.b64`), decoded to the temp dir at runtime. |
-| `api/webhook.py` | `POST /api/webhook` — one Telegram update per call. `GET` returns a health payload. Optional `TELEGRAM_WEBHOOK_SECRET` check. |
-| `api/cron-morning.py` | `GET /api/cron-morning` — daily quote image (subscribers + channel) + story image to the owner. Cron-guarded. |
-| `api/cron-evening.py` | `GET /api/cron-evening` — evening love quote to the channel. Cron-guarded. |
-| `api/post-news.py` | `POST /api/post-news` `{"title","summary","source"}` — posts one AI news item to the channel. Guarded by `CRON_SECRET`. |
-| `vercel.json` | Cron schedules (UTC) + `maxDuration: 60` per function. |
-| `requirements.txt` | `Pillow==10.2.0`. |
+| `api/index.py` | The whole HTTP layer: a Flask app with `POST /api/webhook` (one Telegram update per call; `GET` returns a health payload; optional `TELEGRAM_WEBHOOK_SECRET` check), `GET /api/cron-morning` (daily quote + story image, cron-guarded), `GET /api/cron-evening` (evening love quote, cron-guarded), `POST /api/post-news` `{"title","summary","source"}` (guarded by `CRON_SECRET`). |
+| `vercel.json` | Cron schedules (UTC) + `maxDuration: 60` + the `/api/*` → `/api/index` rewrite. |
+| `requirements.txt` | `Pillow==10.2.0`, `Flask==3.1.0`. |
 | `tools/migrate_state.py` | One-time copy of the live `state.json` into KV. |
 | `tests/test_webhook.py` | Local webhook harness (21 checks, no real token, no Telegram calls). |
 | `tests/test_cron.py` | Local cron/post-news harness (15 checks, real image rendering). |
@@ -172,7 +173,7 @@ both would answer the same updates.
 - `GET https://<DEPLOYED_URL>/api/webhook` → `{"ok": true, ...}`.
 - In Telegram: `/start`, `/quote`, `/quiz`, `/menu`, `/dice` to
   @MuseVishnu_bot — all should answer within a couple of seconds.
-- Vercel dashboard → Deployments → Functions → check the `api/webhook`
+- Vercel dashboard → Deployments → Functions → check the `api/index`
   logs for errors.
 - Rollback (if anything is wrong): `deleteWebhook` (or
   `setWebhook` with an empty URL), then restart the VM bot with the
@@ -194,7 +195,7 @@ existing VM cron and posted through `/api/post-news` (step 6.3).
 
 ```bash
 python3 bot/superbot.py --test          # the bot's own dry-run suite (must end TEST OK)
-python3 tests/test_webhook.py           # 21 checks: fake Telegram POSTs against api/webhook.py
+python3 tests/test_webhook.py           # 21 checks: fake Telegram POSTs against the Flask app (api/index.py)
 python3 tests/test_cron.py              # 15 checks: real morning/evening/news flows, mocked transport
 python3 -m py_compile bot/*.py api/*.py tools/*.py tests/*.py
 ```

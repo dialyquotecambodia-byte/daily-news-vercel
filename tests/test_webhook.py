@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Local webhook harness: simulates Telegram POSTs against api/webhook.py.
+"""Local webhook harness: simulates Telegram POSTs against api/index.py
+(the Flask app) using Flask's test client — no real HTTP server.
 
 No real token, no network calls to Telegram. The bot's api_call and
 send_photo are monkeypatched to record calls and return canned responses;
@@ -15,10 +16,6 @@ import json
 import os
 import sys
 import tempfile
-import threading
-import urllib.error
-import urllib.request
-from http.server import ThreadingHTTPServer
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
@@ -57,19 +54,13 @@ def fake_send_photo(chat_id, path, caption=""):
 sb.api_call = fake_api_call
 sb.send_photo = fake_send_photo
 
-# --- Load the real webhook handler module ------------------------------------
+# --- Load the real Flask app -------------------------------------------------
 spec = importlib.util.spec_from_file_location(
-    "webhook_handler", os.path.join(PROJECT_ROOT, "api", "webhook.py")
+    "flask_app", os.path.join(PROJECT_ROOT, "api", "index.py")
 )
-webhook_mod = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(webhook_mod)
-Handler = webhook_mod.handler
-
-server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-server.daemon_threads = True
-thread = threading.Thread(target=server.serve_forever, daemon=True)
-thread.start()
-BASE = f"http://127.0.0.1:{server.server_address[1]}"
+app_mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(app_mod)
+client = app_mod.app.test_client()
 
 PASSED = []
 FAILED = []
@@ -81,29 +72,16 @@ def check(name, ok, detail=""):
 
 
 def post_update(update, headers=None):
-    data = json.dumps(update).encode("utf-8")
-    req = urllib.request.Request(BASE, data=data, method="POST")
-    req.add_header("Content-Type", "application/json")
-    req.add_header("X-Telegram-Bot-Api-Secret-Token", "test-secret")
-    for k, v in (headers or {}).items():
-        req.add_header(k, v)
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return resp.status, json.loads(resp.read().decode())
-    except urllib.error.HTTPError as e:
-        return e.code, json.loads(e.read().decode())
+    h = {"X-Telegram-Bot-Api-Secret-Token": "test-secret"}
+    h.update(headers or {})
+    resp = client.post("/api/webhook", json=update, headers=h)
+    return resp.status_code, resp.get_json(silent=True) or {}
 
 
 def post_raw(data, headers=None):
-    req = urllib.request.Request(BASE, data=data, method="POST")
-    req.add_header("Content-Type", "application/json")
-    for k, v in (headers or {}).items():
-        req.add_header(k, v)
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return resp.status, json.loads(resp.read().decode())
-    except urllib.error.HTTPError as e:
-        return e.code, json.loads(e.read().decode())
+    resp = client.post("/api/webhook", data=data,
+                       content_type="application/json", headers=headers or {})
+    return resp.status_code, resp.get_json(silent=True) or {}
 
 
 def sends(method="sendMessage"):
@@ -131,9 +109,9 @@ print("— webhook harness —")
 print(f"  state file: {STATE_PATH}")
 
 # 0. Health check
-with urllib.request.urlopen(BASE, timeout=10) as resp:
-    body = json.loads(resp.read().decode())
-check("GET / returns 200 health", resp.status == 200 and body.get("ok") is True)
+resp = client.get("/api/webhook")
+body = resp.get_json(silent=True) or {}
+check("GET /api/webhook returns 200 health", resp.status_code == 200 and body.get("ok") is True)
 
 # 1. /start
 CALLS.clear()
@@ -230,7 +208,6 @@ status, _ = post_raw(b"{not json",
                      headers={"X-Telegram-Bot-Api-Secret-Token": "test-secret"})
 check("invalid JSON is rejected", status == 400, f"got {status}")
 
-server.shutdown()
 print(f"\n{len(PASSED)} passed, {len(FAILED)} failed")
 if FAILED:
     print("failed:", FAILED)
