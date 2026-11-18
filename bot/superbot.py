@@ -328,7 +328,13 @@ HELP_TEXT = (
     "/captcha on — new members tap a button to prove they are human\n"
     "/report — reply to a message to report it to the admins\n"
     "/addblacklist word, /blacklist, /blacklistmode delete|warn|mute\n"
-    "/addsticker — reply to a sticker to blacklist it"
+    "/addsticker — reply to a sticker to blacklist it\n\n"
+    "Levels & fun\n"
+    "/checkin — daily check-in, +20 XP and keep your streak alive\n"
+    "/rank — your XP, level and streak\n"
+    "/leaderboard — top players and longest streaks\n"
+    "/tournament — 5-question trivia tournament in a group, winner +50 XP\n"
+    "/digest — your personal daily digest"
     "\n\nInline: type @MuseVishnu_bot in any chat to send a quote, the Mini App or the channel."
 )
 
@@ -526,6 +532,10 @@ def load_state():
     state.setdefault("federations", {})
     state.setdefault("connections", {})
     state.setdefault("pending_verify", {})
+    state.setdefault("xp", {})
+    state.setdefault("streaks", {})
+    state.setdefault("tournaments", {})
+    state.setdefault("tournament_polls", {})
     state.setdefault("users", {})
     state.setdefault("questions", [])
     state.setdefault("invite_codes", [])
@@ -1194,6 +1204,12 @@ BOT_COMMANDS = [
     ("promote", "Promote a member"),
     ("demote", "Demote an admin"),
     ("purge", "Delete messages in bulk"),
+    ("checkin", "Daily check-in +20 XP"),
+    ("rank", "Your XP, level and streak"),
+    ("leaderboard", "Top players"),
+    ("tournament", "Start a trivia tournament"),
+    ("endtournament", "End the tournament"),
+    ("digest", "Your personal daily digest"),
 ]
 
 
@@ -1473,6 +1489,87 @@ def settings_text(gid, settings):
     return "\n".join(lines)
 
 
+def xp_level(xp):
+    """Level from XP: level n needs 50*(n-1)^2 XP. L1 at 0, L2 at 50, L3 at 200, L4 at 450."""
+    return int((max(0, xp) / 50) ** 0.5) + 1
+
+
+def xp_for_next_level(level):
+    """XP needed to reach this level."""
+    return 50 * level * level
+
+
+def award_xp(state, uid, name, amount):
+    """Add XP; return the new level if the user just levelled up, else None."""
+    if not uid:
+        return None
+    rec = state.setdefault("xp", {}).setdefault(str(uid), {"xp": 0, "name": name or "friend", "last_msg": 0})
+    rec["name"] = name or rec.get("name", "friend")
+    before = xp_level(rec["xp"])
+    rec["xp"] += amount
+    after = xp_level(rec["xp"])
+    return after if after > before else None
+
+
+def award_message_xp(state, uid, name):
+    """+2 XP per message, at most once every 60 seconds (anti-farm). Returns new level on level-up."""
+    if not uid:
+        return None
+    rec = state.setdefault("xp", {}).setdefault(str(uid), {"xp": 0, "name": name or "friend", "last_msg": 0})
+    now_ts = int(time.time())
+    if now_ts - rec.get("last_msg", 0) < 60:
+        return None
+    rec["last_msg"] = now_ts
+    return award_xp(state, uid, name, 2)
+
+
+def xp_record(state, uid):
+    return state.get("xp", {}).get(str(uid), {"xp": 0, "name": "friend"})
+
+
+def rank_text(state, uid, name):
+    rec = xp_record(state, uid)
+    xp = rec["xp"]
+    level = xp_level(xp)
+    nxt = xp_for_next_level(level)
+    ranked = sorted(state.get("xp", {}).items(), key=lambda kv: kv[1]["xp"], reverse=True)
+    rank = next((i + 1 for i, (k, _v) in enumerate(ranked) if k == str(uid)), len(ranked))
+    streak = state.get("streaks", {}).get(str(uid), {"count": 0})
+    return (
+        f"🏆 {name}'s rank\n\n"
+        f"⭐ Level {level} — {xp} XP\n"
+        f"Next level: {nxt - xp} XP to go (Level {level + 1} at {nxt} XP)\n"
+        f"Global rank: #{rank} of {len(ranked)}\n"
+        f"🔥 Daily streak: {streak.get('count', 0)} day(s) — /checkin every day to keep it alive"
+    )
+
+
+def leaderboard_text(state):
+    xp = state.get("xp", {})
+    if not xp:
+        return "No XP yet. Chat, play games and answer quizzes to earn XP! /checkin gives +20 XP every day."
+    ranked = sorted(xp.values(), key=lambda r: r["xp"], reverse=True)[:10]
+    lines = ["🏆 XP Leaderboard\n"]
+    medals = ["🥇", "🥈", "🥉"]
+    for i, r in enumerate(ranked):
+        medal = medals[i] if i < 3 else f"{i + 1}."
+        lines.append(f"{medal} {r.get('name', 'friend')} — Level {xp_level(r['xp'])} ({r['xp']} XP)")
+    streaks = state.get("streaks", {})
+    if streaks:
+        top_streak = sorted(streaks.values(), key=lambda s: s.get("count", 0), reverse=True)[:5]
+        lines.append("\n🔥 Longest streaks:")
+        for i, s in enumerate(top_streak):
+            lines.append(f"{i + 1}. {s.get('name', 'friend')} — {s.get('count', 0)} day(s)")
+    return "\n".join(lines)
+
+
+def tournament_standings(t):
+    players = sorted(t.get("players", {}).values(), key=lambda p: p["score"], reverse=True)
+    if not players:
+        return "No scores yet — be the first to answer!"
+    return "\n".join(f"{i + 1}. {p['name']}: {p['score']} point(s)" for i, p in enumerate(players))
+
+
 def handle_update(update, state, dry_run=False):
     """Return a list of action dicts for one update."""
     actions = []
@@ -1484,7 +1581,7 @@ def handle_update(update, state, dry_run=False):
         actions.append({"type": "inline", "inline_query_id": iq.get("id"), "results": results})
         return actions
 
-    # Poll answers for quiz scoring
+    # Poll answers for quiz scoring (+ XP, + tournament points)
     if "poll_answer" in update:
         answer = update["poll_answer"]
         poll_id = answer.get("poll_id")
@@ -1498,9 +1595,35 @@ def handle_update(update, state, dry_run=False):
             score["total"] += 1
             if correct:
                 score["correct"] += 1
-                actions.append({"type": "text", "chat_id": quiz["chat_id"], "text": f"Correct, {score['name']}! {quiz.get('explain', '')} Your score: {score['correct']}/{score['total']}"})
+                leveled = award_xp(state, user.get("id"), user.get("first_name", "Player"), 10)
+                msg = f"Correct, {score['name']}! {quiz.get('explain', '')} Your score: {score['correct']}/{score['total']} (+10 XP)"
+                if leveled:
+                    msg += f"\n🎉 LEVEL UP! You are now Level {leveled}!"
+                actions.append({"type": "text", "chat_id": quiz["chat_id"], "text": msg})
             else:
                 actions.append({"type": "text", "chat_id": quiz["chat_id"], "text": f"Not quite, {score['name']}. The answer was: {quiz['options'][quiz['correct']]}. Your score: {score['correct']}/{score['total']}"})
+            # Tournament: first correct answer per question scores a point and advances.
+            tchat = state.get("tournament_polls", {}).get(poll_id)
+            if tchat is not None and correct:
+                t = state.get("tournaments", {}).get(str(tchat))
+                if t and poll_id not in t.get("done_polls", []):
+                    t.setdefault("done_polls", []).append(poll_id)
+                    player = t.setdefault("players", {}).setdefault(uid, {"name": user.get("first_name", "Player"), "score": 0})
+                    player["score"] += 1
+                    player["name"] = user.get("first_name", "Player")
+                    if t["round"] >= t["total"]:
+                        winner_uid = max(t["players"], key=lambda k: t["players"][k]["score"])
+                        winner = t["players"][winner_uid]
+                        award_xp(state, winner_uid, winner["name"], 50)
+                        actions.append({"type": "text", "chat_id": tchat, "text": f"🏆 Tournament over!\n\n{tournament_standings(t)}\n\nWinner: {winner['name']} — +50 XP!"})
+                        for pid in list(t.get("done_polls", [])):
+                            state.get("tournament_polls", {}).pop(pid, None)
+                        state.get("tournaments", {}).pop(str(tchat), None)
+                    else:
+                        t["round"] += 1
+                        q = random.choice(QUIZ_QUESTIONS)
+                        actions.append({"type": "text", "chat_id": tchat, "text": f"✅ {player['name']} got it! +1 point (Round {t['round'] - 1}/{t['total']}).\n\n{tournament_standings(t)}\n\nNext question — Round {t['round']}:"})
+                        actions.append({"type": "quiz", "chat_id": tchat, "question": q, "tournament": True})
         return actions
 
     # Inline button taps
@@ -1538,6 +1661,11 @@ def handle_update(update, state, dry_run=False):
             else:
                 verdict = "It's a draw! 🤝"
             actions.append({"type": "text", "chat_id": chat_id, "text": f"{RPS_EMOJI[player]} vs {RPS_EMOJI[bot]}\n{verdict}\n\nPlay again with /rps."})
+            if result == "win":
+                winner_id = (cb.get("from") or {}).get("id")
+                leveled = award_xp(state, winner_id, (cb.get("from") or {}).get("first_name", "Player"), 5)
+                if leveled:
+                    actions.append({"type": "text", "chat_id": chat_id, "text": f"🎉 LEVEL UP! You are now Level {leveled}! (+5 XP for the win)"})
         elif data.startswith("verify:"):
             # Captcha button: only the new member themself can tap it.
             parts = data.split(":")
@@ -1637,6 +1765,8 @@ def handle_update(update, state, dry_run=False):
     if chat_type == "private" and sender_id:
         connected_group = state.get("connections", {}).get(str(sender_id))
     admin_chat = connected_group if connected_group else chat_id
+    # +2 XP per message (60s cooldown); level-ups are announced at the end.
+    msg_leveled = award_message_xp(state, sender_id, sender.get("first_name", "friend"))
     if chat_type in ("group", "supergroup") and not text.startswith("/"):
         settings = get_group_settings(state, chat_id)
         admin = is_admin(chat_id, sender_id, dry_run=dry_run)
@@ -2205,6 +2335,70 @@ def handle_update(update, state, dry_run=False):
             else:
                 actions.append({"type": "promote", "chat_id": admin_chat, "user_id": target_id, "promote": command == "/promote"})
                 reply(f"{target_name} was {'promoted to admin' if command == '/promote' else 'demoted'}.")
+    elif command == "/checkin":
+        today = phnom_penh_now().strftime("%Y-%m-%d")
+        yesterday = (phnom_penh_now() - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+        st = state.setdefault("streaks", {}).setdefault(str(sender_id), {"count": 0, "last": "", "name": sender.get("first_name", "friend")})
+        st["name"] = sender.get("first_name", "friend")
+        if st.get("last") == today:
+            reply(f"Already checked in today! Your streak is {st['count']} day(s). Come back tomorrow. 🔥")
+        else:
+            if st.get("last") == yesterday:
+                st["count"] += 1
+            else:
+                st["count"] = 1
+            st["last"] = today
+            leveled = award_xp(state, sender_id, sender.get("first_name", "friend"), 20)
+            msg = f"✅ Checked in! +20 XP\n🔥 Streak: {st['count']} day(s) — keep it alive tomorrow!"
+            if leveled:
+                msg += f"\n\n🎉 LEVEL UP! You are now Level {leveled}!"
+            reply(msg)
+    elif command == "/rank":
+        reply(rank_text(state, sender_id, sender.get("first_name", "friend")))
+    elif command == "/leaderboard":
+        reply(leaderboard_text(state))
+    elif command == "/tournament":
+        if chat_type not in ("group", "supergroup"):
+            reply("Tournaments run in a group — add me to a group and send /tournament there!")
+        else:
+            t = state.get("tournaments", {}).get(str(chat_id))
+            if t:
+                reply(f"🏆 Trivia tournament — Round {t['round']}/{t['total']}\n\n{tournament_standings(t)}\n\nAnswer the current question to score! Admins can end it early with /endtournament.")
+            else:
+                state.setdefault("tournaments", {})[str(chat_id)] = {"round": 1, "total": 5, "players": {}, "current_poll": None, "done_polls": [], "starter": sender_id}
+                q = random.choice(QUIZ_QUESTIONS)
+                reply("🏆 Trivia tournament started! 5 questions, first correct answer scores a point. Winner gets +50 XP!\n\nRound 1:")
+                actions.append({"type": "quiz", "chat_id": chat_id, "question": q, "tournament": True})
+    elif command == "/endtournament":
+        t = state.get("tournaments", {}).get(str(chat_id))
+        if not t:
+            reply("No tournament running here. Start one with /tournament!")
+        elif not is_admin(chat_id, sender_id, dry_run=dry_run) and sender_id != t.get("starter"):
+            reply("Only a group admin or the player who started the tournament can end it.")
+        else:
+            if t.get("players"):
+                winner_uid = max(t["players"], key=lambda k: t["players"][k]["score"])
+                winner = t["players"][winner_uid]
+                award_xp(state, winner_uid, winner["name"], 50)
+                reply(f"🏆 Tournament ended early!\n\n{tournament_standings(t)}\n\nWinner: {winner['name']} — +50 XP!")
+            else:
+                reply("Tournament ended — no scores yet. Start a new one with /tournament!")
+            for pid in list(t.get("done_polls", [])):
+                state.get("tournament_polls", {}).pop(pid, None)
+            state.get("tournaments", {}).pop(str(chat_id), None)
+    elif command == "/digest":
+        quote = pick_quote("any", state)
+        rec = xp_record(state, sender_id)
+        level = xp_level(rec["xp"])
+        streak = state.get("streaks", {}).get(str(sender_id), {"count": 0})
+        reply(
+            f"📰 Your Daily News digest\n\n"
+            f"💬 {quote}\n\n"
+            f"⭐ Level {level} — {rec['xp']} XP ({xp_for_next_level(level) - rec['xp']} XP to Level {level + 1})\n"
+            f"🔥 Streak: {streak.get('count', 0)} day(s) — /checkin to keep it alive\n"
+            f"📅 Channel posts: quote 08:42 • AI news 12:42 • love quote 18:42\n"
+            f"🏆 See the top players with /leaderboard"
+        )
     elif command == "/info":
         title = chat.get("title") or chat.get("first_name") or "this chat"
         reply(f"This is {title} (chat id {chat_id}, type {chat.get('type')}). I'm @MuseVishnu_bot.")
@@ -2254,6 +2448,9 @@ def handle_update(update, state, dry_run=False):
                 game["attempts"] += 1
                 if guess == game["number"]:
                     reply(f"🎉 Correct! The number was {game['number']}. You got it in {game['attempts']} tries! Play again with /guess.")
+                    _lvl = award_xp(state, sender_id, sender.get("first_name", "friend"), 15)
+                    if _lvl:
+                        reply(f"🎉 LEVEL UP! You are now Level {_lvl}! (+15 XP for the win)")
                     del games[key]
                 elif guess < game["number"]:
                     reply(f"Too low! Try a bigger number. (Attempt {game['attempts']})")
@@ -2330,12 +2527,16 @@ def handle_update(update, state, dry_run=False):
             reply("I don't know you yet. Send me a message first.")
         else:
             score = state.get("scores", {}).get(str((message.get("from") or {}).get("id", "")), {"correct": 0, "total": 0})
+            rec = xp_record(state, (message.get("from") or {}).get("id", ""))
+            streak = state.get("streaks", {}).get(str((message.get("from") or {}).get("id", "")), {"count": 0})
             reply(
                 f"Your stats, {user_record.get('name', 'friend')}:\n"
                 f"Messages: {user_record.get('messages', 0)}\n"
                 f"Quotes you asked for: {user_record.get('quotes', 0)}\n"
                 f"Quizzes played: {user_record.get('quizzes', 0)}\n"
                 f"Quiz score: {score.get('correct', 0)}/{score.get('total', 0)}\n"
+                f"⭐ Level {xp_level(rec['xp'])} — {rec['xp']} XP\n"
+                f"🔥 Streak: {streak.get('count', 0)} day(s)\n"
                 f"Favourite: {user_record.get('favourite') or 'not yet'}\n"
                 f"Last command: {user_record.get('last_command') or 'none'}"
             )
@@ -2376,6 +2577,9 @@ def handle_update(update, state, dry_run=False):
         game["attempts"] += 1
         if guess == game["number"]:
             reply(f"🎉 Correct! The number was {game['number']}. You got it in {game['attempts']} tries! Play again with /guess.")
+            _lvl = award_xp(state, sender_id, sender.get("first_name", "friend"), 15)
+            if _lvl:
+                reply(f"🎉 LEVEL UP! You are now Level {_lvl}! (+15 XP for the win)")
             del state["guess_games"][str(chat_id)]
         elif guess < game["number"]:
             reply(f"Too low! Try a bigger number. (Attempt {game['attempts']})")
@@ -2385,6 +2589,9 @@ def handle_update(update, state, dry_run=False):
         game = state["scramble_games"][str(chat_id)]
         if text.strip().lower() == game["word"]:
             reply(f"🎉 Correct! The word was {game['word'].upper()}. Play again with /scramble.")
+            _lvl = award_xp(state, sender_id, sender.get("first_name", "friend"), 10)
+            if _lvl:
+                reply(f"🎉 LEVEL UP! You are now Level {_lvl}! (+10 XP for the win)")
             del state["scramble_games"][str(chat_id)]
         else:
             reply(f"Not quite — the scrambled word is {game['scrambled']}. Try again!")
@@ -2424,6 +2631,8 @@ def handle_update(update, state, dry_run=False):
             reply(f"Thanks, {user_record.get('name', 'friend')}! You have sent me {user_record.get('messages', 0)} messages now. Send /quote for a quote, /quiz for a game, /ask to ask me something, or /help to see everything.")
         else:
             reply("Thanks for your message! Send /quote for a quote, /quoteimg for a picture, /quiz for a game, /ask to ask me something, or /help to see everything I can do.")
+    if msg_leveled:
+        actions.append({"type": "text", "chat_id": chat_id, "text": f"🎉 LEVEL UP! You are now Level {msg_leveled}! Keep chatting and playing to earn more XP."})
     return actions
 
 
@@ -2455,6 +2664,11 @@ def execute_actions(actions, state):
             poll_id = (result.get("result") or {}).get("poll", {}).get("id")
             if poll_id:
                 state["quiz_polls"][poll_id] = {"chat_id": action["chat_id"], "correct": q["correct"], "options": q["options"], "explain": q["explain"]}
+                if action.get("tournament"):
+                    state.setdefault("tournament_polls", {})[poll_id] = action["chat_id"]
+                    t = state.get("tournaments", {}).get(str(action["chat_id"]))
+                    if t:
+                        t["current_poll"] = poll_id
                 save_state(state)
         elif action["type"] == "poll":
             send_poll(action["chat_id"], action["question"], action["options"])
@@ -2579,13 +2793,22 @@ def send_daily():
     sent = 0
     try:
         for chat_id in targets:
+            # Personal line for people (not the channel, not groups).
+            cap = caption
+            if isinstance(chat_id, int):
+                rec = state.get("xp", {}).get(str(chat_id))
+                st = state.get("streaks", {}).get(str(chat_id))
+                if rec or st:
+                    xp = (rec or {}).get("xp", 0)
+                    streak = (st or {}).get("count", 0)
+                    cap = caption + f"\n\n🔥 Your streak: {streak} day(s) • ⭐ Level {xp_level(xp)} ({xp} XP)\nCheck in with /checkin to keep your streak alive!"
             try:
-                send_photo(chat_id, path, caption=caption)
+                send_photo(chat_id, path, caption=cap)
                 sent += 1
             except Exception as e:
                 print(f"daily photo failed for {chat_id}: {e}, trying text", flush=True)
                 try:
-                    send_message(chat_id, caption)
+                    send_message(chat_id, cap)
                     sent += 1
                 except Exception as e2:
                     print(f"failed to send daily quote to {chat_id}: {e2}", flush=True)
@@ -2802,6 +3025,84 @@ def run_tests():
     a = handle_update({"update_id": 130, "message": {"chat": group, "from": admin, "text": "/purge", "message_id": 105, "reply_to_message": {"message_id": 100}}}, state, dry_run=True)
     check("purge deletes 6 messages", len([x for x in a if x.get("type") == "delete"]) == 6)
     print(f"phase 1 checks: {len(fails)} failures")
+    if fails:
+        print("FAILED: " + "; ".join(fails))
+        return 1
+
+    # Phase 2 (engagement: XP, streaks, tournaments, digest) tests.
+    fails = []
+    def check2(label, cond):
+        print(("PASS " if cond else "FAIL ") + label)
+        if not cond:
+            fails.append(label)
+    player = {"id": 777, "first_name": "Player"}
+    dm = {"id": 777, "type": "private"}
+
+    # Message XP: +2 once, then the 60s cooldown blocks the second message.
+    a = handle_update({"update_id": 201, "message": {"chat": dm, "from": player, "text": "hello"}}, state, dry_run=True)
+    check2("first message gives +2 XP", state.get("xp", {}).get("777", {}).get("xp") == 2)
+    a = handle_update({"update_id": 202, "message": {"chat": dm, "from": player, "text": "hello again"}}, state, dry_run=True)
+    check2("second message inside 60s gives no more XP", state.get("xp", {}).get("777", {}).get("xp") == 2)
+
+    # Check-in: +20 XP and a 1-day streak; twice in one day is refused.
+    a = handle_update({"update_id": 203, "message": {"chat": dm, "from": player, "text": "/checkin"}}, state, dry_run=True)
+    check2("check-in gives +20 XP", state.get("xp", {}).get("777", {}).get("xp") == 22)
+    check2("check-in starts a 1-day streak", state.get("streaks", {}).get("777", {}).get("count") == 1)
+    a = handle_update({"update_id": 204, "message": {"chat": dm, "from": player, "text": "/checkin"}}, state, dry_run=True)
+    check2("second check-in today refused", any("Already checked in" in t for t in texts(a)) and state.get("xp", {}).get("777", {}).get("xp") == 22)
+
+    # Rank and leaderboard show the player.
+    a = handle_update({"update_id": 205, "message": {"chat": dm, "from": player, "text": "/rank"}}, state, dry_run=True)
+    check2("rank shows Level 1 and 22 XP", any("Level 1" in t and "22 XP" in t for t in texts(a)))
+    a = handle_update({"update_id": 206, "message": {"chat": dm, "from": player, "text": "/leaderboard"}}, state, dry_run=True)
+    check2("leaderboard lists the player", any("Player" in t for t in texts(a)))
+
+    # Quiz correct answer: +10 XP.
+    state.setdefault("quiz_polls", {})["qp1"] = {"chat_id": 777, "correct": 0, "options": ["A", "B"], "explain": "test"}
+    a = handle_update({"update_id": 207, "poll_answer": {"poll_id": "qp1", "user": player, "option_ids": [0]}}, state, dry_run=True)
+    check2("quiz correct gives +10 XP", state.get("xp", {}).get("777", {}).get("xp") == 32 and any("+10 XP" in t for t in texts(a)))
+
+    # Guess win (+15) then scramble win (+10) crosses 50 XP: level 2.
+    state.setdefault("guess_games", {})["777"] = {"number": 42, "attempts": 0}
+    a = handle_update({"update_id": 208, "message": {"chat": dm, "from": player, "text": "/guess 42"}}, state, dry_run=True)
+    check2("guess win gives +15 XP", state.get("xp", {}).get("777", {}).get("xp") == 47)
+    state.setdefault("scramble_games", {})["777"] = {"word": "kind", "scrambled": "dnik"}
+    a = handle_update({"update_id": 209, "message": {"chat": dm, "from": player, "text": "kind"}}, state, dry_run=True)
+    check2("scramble win levels up to Level 2", state.get("xp", {}).get("777", {}).get("xp") == 57 and any("LEVEL UP! You are now Level 2" in t for t in texts(a)))
+
+    # Tournament: 5 rounds, Bad (333) wins 3-2, gets +50 XP, tournament clears.
+    a = handle_update({"update_id": 210, "message": {"chat": group, "from": admin, "text": "/tournament"}}, state, dry_run=True)
+    check2("tournament starts with a quiz question", any(x.get("type") == "quiz" and x.get("tournament") for x in a))
+    t = state.get("tournaments", {}).get("-100123", {})
+    check2("tournament state created", t.get("round") == 1 and t.get("total") == 5)
+    bad = {"id": 333, "first_name": "Bad"}
+    spammer = {"id": 222, "first_name": "Spammer"}
+    rounds = [(211, "tp1", bad), (212, "tp2", spammer), (213, "tp3", bad), (214, "tp4", spammer), (215, "tp5", bad)]
+    for uid_, poll, who in rounds:
+        state.setdefault("quiz_polls", {})[poll] = {"chat_id": -100123, "correct": 0, "options": ["A", "B"], "explain": "t"}
+        state.setdefault("tournament_polls", {})[poll] = -100123
+        a = handle_update({"update_id": uid_, "poll_answer": {"poll_id": poll, "user": who, "option_ids": [0]}}, state, dry_run=True)
+    check2("tournament ends after 5 rounds", "-100123" not in state.get("tournaments", {}))
+    check2("tournament winner announced with +50 XP", any("Tournament over!" in t and "Winner: Bad" in t for t in texts(a)))
+    check2("winner got the +50 XP bonus", state.get("xp", {}).get("333", {}).get("xp", 0) >= 80)
+    check2("tournament polls cleared", not state.get("tournament_polls", {}))
+
+    # Standings mid-tournament, and early end with no scores.
+    a = handle_update({"update_id": 216, "message": {"chat": group, "from": admin, "text": "/tournament"}}, state, dry_run=True)
+    state.setdefault("quiz_polls", {})["tp6"] = {"chat_id": -100123, "correct": 0, "options": ["A", "B"], "explain": "t"}
+    state.setdefault("tournament_polls", {})["tp6"] = -100123
+    a = handle_update({"update_id": 217, "poll_answer": {"poll_id": "tp6", "user": bad, "option_ids": [0]}}, state, dry_run=True)
+    a = handle_update({"update_id": 218, "message": {"chat": group, "from": admin, "text": "/tournament"}}, state, dry_run=True)
+    check2("standings show the leader", any("Bad: 1 point(s)" in t for t in texts(a)))
+    a = handle_update({"update_id": 219, "message": {"chat": group, "from": admin, "text": "/endtournament"}}, state, dry_run=True)
+    check2("early end announces the winner", any("Tournament ended early!" in t and "Winner: Bad" in t for t in texts(a)))
+
+    # Digest and updated mystats.
+    a = handle_update({"update_id": 220, "message": {"chat": dm, "from": player, "text": "/digest"}}, state, dry_run=True)
+    check2("digest shows quote, level and streak", any("digest" in t and "Level 2" in t and "Streak: 1" in t for t in texts(a)))
+    a = handle_update({"update_id": 221, "message": {"chat": dm, "from": player, "text": "/mystats"}}, state, dry_run=True)
+    check2("mystats shows XP and streak", any("Level 2" in t and "57 XP" in t and "Streak: 1" in t for t in texts(a)))
+    print(f"phase 2 checks: {len(fails)} failures")
     if fails:
         print("FAILED: " + "; ".join(fails))
         return 1

@@ -24,6 +24,7 @@ Routes:
 - GET|POST /api/cron-evening   evening love quote (Bearer CRON_SECRET)
 - GET  /api/post-news    health check
 - POST /api/post-news    post one AI news item (Bearer CRON_SECRET)
+- GET  /api/leaderboard  public XP leaderboard + top streaks (JSON)
 
 No polling loop runs on Vercel: reminders are delivered on the next
 incoming update (check_reminders runs inside the webhook handler).
@@ -41,6 +42,28 @@ from bot.vercel_common import cron_authorized
 WEBHOOK_SECRET = os.environ.get("TELEGRAM_WEBHOOK_SECRET", "")
 
 app = Flask(__name__)
+
+
+@app.after_request
+def _cors(response):
+    # The Mini App fetches /api/leaderboard from another origin.
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    return response
+
+
+def leaderboard_get():
+    try:
+        state = sb.load_state()
+    except Exception as e:
+        print(f"leaderboard error: {e}", flush=True)
+        return {"ok": False, "error": str(e)}, 500
+    xp = state.get("xp", {})
+    ranked = sorted(xp.values(), key=lambda r: r.get("xp", 0), reverse=True)[:10]
+    board = [{"name": r.get("name", "friend"), "xp": r.get("xp", 0), "level": sb.xp_level(r.get("xp", 0))} for r in ranked]
+    streaks = state.get("streaks", {})
+    top_streaks = sorted(streaks.values(), key=lambda s: s.get("count", 0), reverse=True)[:5]
+    streak_board = [{"name": s.get("name", "friend"), "days": s.get("count", 0)} for s in top_streaks]
+    return {"ok": True, "leaderboard": board, "streaks": streak_board}, 200
 
 
 def _err(code, message):
@@ -123,6 +146,7 @@ ROUTES = {
     "cron-morning": {"GET": cron_morning, "POST": cron_morning},
     "cron-evening": {"GET": cron_evening, "POST": cron_evening},
     "post-news": {"GET": post_news_get, "POST": post_news_post},
+    "leaderboard": {"GET": leaderboard_get},
 }
 
 
@@ -152,6 +176,11 @@ def cron_evening_route():
 @app.route("/api/post-news", methods=["GET", "POST"])
 def post_news_route():
     return _dispatch("post-news")
+
+
+@app.route("/api/leaderboard", methods=["GET"])
+def leaderboard_route():
+    return _dispatch("leaderboard")
 
 
 @app.route("/", methods=["GET"])
