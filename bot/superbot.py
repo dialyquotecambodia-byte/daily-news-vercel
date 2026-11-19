@@ -2148,7 +2148,7 @@ def ai_chat(prompt, dry_run=False, history=None):
         try:
             base = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
             model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
-            messages = [{"role": "system", "content": "You are Daily News, a helpful Telegram bot. Keep replies short and friendly."}]
+            messages = [{"role": "system", "content": "You are Daily News, a helpful Telegram bot. Keep replies short and friendly. Format for Telegram: plain text only, short lines, simple '• ' bullets. Never use markdown tables (Telegram cannot show them) — use short lines instead. No long essays; keep news answers to a few short lines."}]
             messages += [{"role": h.get("role", "user"), "content": h.get("content", "")[:1000]} for h in history[-6:]]
             messages.append({"role": "user", "content": prompt[:2000]})
             req = urllib.request.Request(
@@ -2164,10 +2164,14 @@ def ai_chat(prompt, dry_run=False, history=None):
             print(f"openai chat failed: {e}", flush=True)
             return None
     try:
-        full = prompt[:2000]
+        # Pollinations has no system prompt, so the format rule rides with
+        # the user prompt: Telegram cannot render markdown tables, so the
+        # answer must stay short, plain text, short lines, simple bullets.
+        fmt = "Answer in plain text for Telegram. Keep it short. Never use markdown tables (Telegram cannot show them) — use short lines with '• ' instead. No long essays.\n\n"
+        full = (fmt + prompt)[:2000]
         if history:
             transcript = "\n".join(f"{'User' if h.get('role') == 'user' else 'Assistant'}: {h.get('content', '')[:500]}" for h in history[-6:])
-            full = f"Conversation so far:\n{transcript}\nUser: {prompt}\nAssistant:"
+            full = f"{fmt}Conversation so far:\n{transcript}\nUser: {prompt}\nAssistant:"[:2000]
         url = "https://text.pollinations.ai/" + urllib.parse.quote(full[:2000])
         req = urllib.request.Request(url, headers={"Accept": "text/plain"})
         with urllib.request.urlopen(req, timeout=20) as resp:
