@@ -510,3 +510,34 @@ Dry-run suite: 54 + 35 + 20 + 15 + 6 + 17 + 12 + 18 + 26 + 10 + 6 + 13 Phase 10 
 - **`/remind` and `/ask` unknown-question queue** keep working (they are
   state-backed), and group admin commands work unchanged (they are
   stateless API calls + state-backed settings).
+
+## Live feed — Mini App fetches its news from the bot (2026-11-19)
+
+The Mini App used to bake its 14 articles into the artifact, so every
+morning refresh needed an `artifact.edit` + an `artifact.share` — and the
+share needs a fresh user approval every time, which a scheduled run cannot
+obtain. On 2026-11-19 the 07:42 refresh edited the app (v10, Nov 19 news)
+but its share approval timed out, so the public link kept serving v9.
+
+Fix, built and deployed 2026-11-19 ~10:00:
+- **GET /api/feed** (public, CORS open): returns `{"ok": true, "feed":
+  {"date": "2026-11-19", "articles": [...]}}` from KV state (`state["feed"]`).
+  Empty feed before the first POST: `{"date": "", "articles": []}`.
+- **POST /api/feed** (Bearer CRON_SECRET): body `{"date": "YYYY-MM-DD",
+  "articles": [...]}`; each article needs `category`, `headline`, `publisher`,
+  `time` (relative string), `read_time` (minutes), `tldr` (exactly 3 bullets),
+  `body` (exactly 4 paragraphs); `featured: true` marks the hero. Returns
+  `{"ok": true, "articles": 14, "date": ...}`. 400 on a bad payload, 401
+  without the secret.
+- **Mini App**: renders its built-in 14 articles instantly, then fetches
+  /api/feed in the background (after first paint, 8s timeout) and swaps in
+  the live feed — hero, feed, category pills and AI Brief re-render, freshness
+  stamp from the live date. On any failure it keeps the built-in dataset
+  silently. No layout, styling or feature changes.
+- **Morning refresh cron** (`daily-news-miniapp-morning-refresh`, ~07:42) now
+  researches the news and POSTs the 14 articles to /api/feed, then verifies
+  with a GET. It no longer calls artifact.edit or artifact.share. Next run
+  Fri 2026-11-20 07:42.
+- Seeded at deploy with 14 verified Nov 19 articles (hero: Nvidia's
+  $115.8B quarter). Harnesses: webhook 30/30 (incl. 5 new feed checks),
+  cron 20/20. Remote head 0ed39078.
