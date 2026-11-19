@@ -28,6 +28,7 @@ os.environ["TELEGRAM_BOT_TOKEN"] = "test-token-not-real"
 os.environ["STATE_BACKEND"] = "file"
 os.environ["STATE_PATH"] = STATE_PATH
 os.environ["TELEGRAM_WEBHOOK_SECRET"] = "test-secret"
+os.environ["CRON_SECRET"] = "test-secret"
 
 import bot.superbot as sb  # noqa: E402
 
@@ -222,6 +223,34 @@ resp = client.get("/api/index")
 check("GET /api/index without a route is 404", resp.status_code == 404)
 resp = client.get("/api/bogus")
 check("GET /api/bogus is 404", resp.status_code == 404)
+
+# 11. /api/feed: public GET, CRON_SECRET-guarded POST, validation
+resp = client.get("/api/feed")
+body = resp.get_json(silent=True) or {}
+check("GET /api/feed returns an empty feed at first",
+      resp.status_code == 200 and body.get("ok") is True and body.get("feed", {}).get("articles") == [])
+feed_payload = {"date": "2026-11-19", "articles": [
+    {"category": "AI", "headline": "Test AI story", "publisher": "Test News", "time": "1h ago", "read_time": 3,
+     "tldr": ["One.", "Two.", "Three."], "body": ["P1.", "P2.", "P3.", "P4."]},
+]}
+resp = client.post("/api/feed", json=feed_payload)
+check("POST /api/feed without auth is 401", resp.status_code == 401, f"got {resp.status_code}")
+resp = client.post("/api/feed", json=feed_payload,
+                   headers={"Authorization": "Bearer test-secret"})
+body = resp.get_json(silent=True) or {}
+check("POST /api/feed with the cron secret saves it",
+      resp.status_code == 200 and body.get("ok") is True and body.get("articles") == 1, f"{resp.status_code} {body}")
+resp = client.get("/api/feed")
+body = resp.get_json(silent=True) or {}
+check("GET /api/feed returns the saved articles",
+      body.get("feed", {}).get("date") == "2026-11-19" and len(body.get("feed", {}).get("articles", [])) == 1)
+bad_payload = {"date": "2026-11-19", "articles": [
+    {"category": "AI", "headline": "Bad story", "tldr": ["Only one bullet."], "body": ["P1."]},
+]}
+resp = client.post("/api/feed", json=bad_payload,
+                   headers={"Authorization": "Bearer test-secret"})
+check("POST /api/feed rejects articles without 3 TL;DR bullets and 4 paragraphs",
+      resp.status_code == 400, f"got {resp.status_code}")
 
 print(f"\n{len(PASSED)} passed, {len(FAILED)} failed")
 if FAILED:

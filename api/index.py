@@ -146,6 +146,45 @@ def cron_evening():
     return {"ok": True, "reminders_sent": reminders, "evening_sent": sent, "scheduled_sent": scheduled}, 200
 
 
+def feed_get():
+    """Public GET: the Mini App's live news feed (served from KV state)."""
+    try:
+        state = sb.load_state()
+    except Exception as e:
+        print(f"feed error: {e}", flush=True)
+        return {"ok": False, "error": str(e)}, 500
+    feed = state.get("feed") or {"date": "", "articles": []}
+    return {"ok": True, "feed": feed}, 200
+
+
+def feed_post():
+    """Bearer CRON_SECRET: replace the live feed (called by the morning refresh cron)."""
+    if not cron_authorized(request.headers):
+        return {"ok": False, "error": "unauthorized"}, 401
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return {"ok": False, "error": "invalid JSON"}, 400
+    date = (data.get("date") or "").strip()
+    articles = data.get("articles")
+    if not date or not isinstance(articles, list) or not articles:
+        return {"ok": False, "error": "date and a non-empty articles list are required"}, 400
+    for a in articles:
+        if not isinstance(a, dict) or not (a.get("headline") or "").strip() or not (a.get("category") or "").strip():
+            return {"ok": False, "error": "each article needs a headline and a category"}, 400
+        if not isinstance(a.get("tldr"), list) or len(a["tldr"]) != 3:
+            return {"ok": False, "error": "each article needs exactly 3 TL;DR bullets"}, 400
+        if not isinstance(a.get("body"), list) or len(a["body"]) != 4:
+            return {"ok": False, "error": "each article needs exactly 4 body paragraphs"}, 400
+    try:
+        state = sb.load_state()
+        state["feed"] = {"date": date, "articles": articles}
+        sb.save_state(state)
+    except Exception as e:
+        print(f"feed error: {e}", flush=True)
+        return {"ok": False, "error": str(e)}, 500
+    return {"ok": True, "articles": len(articles), "date": date}, 200
+
+
 def post_news_get():
     return {"ok": True, "service": "daily-news-bot", "endpoint": "post-news"}, 200
 
@@ -176,6 +215,7 @@ ROUTES = {
     "post-news": {"GET": post_news_get, "POST": post_news_post},
     "leaderboard": {"GET": leaderboard_get},
     "stats": {"GET": stats_get},
+    "feed": {"GET": feed_get, "POST": feed_post},
 }
 
 
@@ -215,6 +255,11 @@ def leaderboard_route():
 @app.route("/api/stats", methods=["GET"])
 def stats_route():
     return _dispatch("stats")
+
+
+@app.route("/api/feed", methods=["GET", "POST"])
+def feed_route():
+    return _dispatch("feed")
 
 
 @app.route("/", methods=["GET"])
