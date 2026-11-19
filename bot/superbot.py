@@ -1530,7 +1530,7 @@ def set_bot_profile_photo(photo_path):
     return bool(ok)
 
 
-MINI_APP_URL = "https://muse.ai/s/daily-news-mini-app-nl6exp9ekxafr/GQF2XII7qd6J-cqexZJxXqGi6D4u336n8ZitQWaNnQk"
+MINI_APP_URL = "https://daily-news-tma.vercel.app"
 
 BOT_COMMANDS = [
     ("start", "Start Daily News"),
